@@ -8,6 +8,7 @@ import threading
 import winreg
 from pathlib import Path
 from datetime import datetime
+from core.error_handler import log_error
 
 
 def _find_steam_path() -> Path | None:
@@ -24,7 +25,8 @@ def _find_steam_path() -> Path | None:
             p = Path(val)
             if p.exists() and (p / "steam.exe").exists():
                 return p
-        except Exception:
+        except Exception as _e:
+            log_error(_e, context="actions.game_updater", severity="warning")
             continue
     for p in [
         Path(os.environ.get("ProgramFiles(x86)", "")) / "Steam",
@@ -50,7 +52,8 @@ def _find_epic_path() -> Path | None:
             exe = Path(val) / "Binaries" / "Win64" / "EpicGamesLauncher.exe"
             if exe.exists():
                 return exe.parent
-        except Exception:
+        except Exception as _e:
+            log_error(_e, context="actions.game_updater", severity="warning")
             continue
     for p in [
         Path(os.environ.get("ProgramFiles(x86)", "")) / "Epic Games" / "Launcher" / "Portal" / "Binaries" / "Win64",
@@ -73,8 +76,8 @@ def _get_steam_libraries(steam_path: Path) -> list[Path]:
             lib = Path(raw_path.replace("\\\\", "/")) / "steamapps"
             if lib.exists() and lib not in libraries:
                 libraries.append(lib)
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.game_updater", severity="warning")
     return libraries
 
 
@@ -96,7 +99,8 @@ def _get_steam_games(steam_path: Path) -> list[dict]:
                         "size":  int(size.group(1))  if size  else 0,
                         "lib":   str(lib),
                     })
-            except Exception:
+            except Exception as _e:
+                log_error(_e, context="actions.game_updater", severity="warning")
                 continue
     return games
 
@@ -116,8 +120,8 @@ def _get_steam_window_rect() -> tuple[int, int, int, int] | None:
         for w in gw.getAllWindows():
             if "steam" in w.title.lower() and w.width > 200 and w.visible:
                 return w.left, w.top, w.width, w.height
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.game_updater", severity="warning")
     return None
 
 
@@ -220,8 +224,8 @@ def _handle_steam_profile_selection() -> bool:
 
     except ImportError:
         pass
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.game_updater", severity="warning")
 
     print("[GameUpdater] 👤 Profile selection detected — clicking first profile")
     return _click_first_profile_by_screenshot()
@@ -397,7 +401,8 @@ def _find_best_drive() -> dict | None:
                 gb = shutil.disk_usage(drive_path).free / (1024 ** 3)
                 if gb > 0:
                     drives.append({"letter": letter, "path": drive_path, "free_gb": gb})
-            except Exception:
+            except Exception as _e:
+                log_error(_e, context="actions.game_updater", severity="warning")
                 continue
     return max(drives, key=lambda d: d["free_gb"]) if drives else None
 
@@ -411,7 +416,8 @@ def _select_drive_in_dialog(dialog, drive_letter: str) -> bool:
                     ctrl.click_input()
                     print(f"[GameUpdater] ✅ Drive via {control_type}: {ctrl.window_text()}")
                     return True
-        except Exception:
+        except Exception as _e:
+            log_error(_e, context="actions.game_updater", severity="warning")
             continue
     try:
         for combo in dialog.descendants(control_type="ComboBox"):
@@ -423,18 +429,19 @@ def _select_drive_in_dialog(dialog, drive_letter: str) -> bool:
                         combo.select(idx)
                         return True
                 combo.collapse()
-            except Exception:
+            except Exception as _e:
+                log_error(_e, context="actions.game_updater", severity="warning")
                 continue
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.game_updater", severity="warning")
     try:
         for ctrl in dialog.descendants():
             txt = ctrl.window_text().upper()
             if f"{target}:" in txt and len(txt) < 80:
                 ctrl.click_input()
                 return True
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.game_updater", severity="warning")
     return False
 
 
@@ -446,10 +453,11 @@ def _click_button(window, keywords: list[str]) -> bool:
                 if txt in keywords or any(kw in txt for kw in keywords):
                     btn.click_input()
                     return True
-            except Exception:
+            except Exception as _e:
+                log_error(_e, context="actions.game_updater", severity="warning")
                 continue
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.game_updater", severity="warning")
     return False
 
 
@@ -478,10 +486,11 @@ def _handle_install_dialog(game_name: str) -> str:
                             if any(x in all_text for x in ("C:", "D:", "E:", "F:", "INSTALL", "YÜKLE")):
                                 dialog = win
                                 break
-                    except Exception:
+                    except Exception as _e:
+                        log_error(_e, context="actions.game_updater", severity="warning")
                         continue
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="actions.game_updater", severity="warning")
             if dialog:
                 break
 
@@ -531,8 +540,8 @@ def _handle_install_dialog_pyautogui(game_name: str, best_drive: dict) -> str:
     try:
         install_win.activate()
         time.sleep(0.4)
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.game_updater", severity="warning")
 
     wx, wy = install_win.left, install_win.top
     ww, wh = install_win.width, install_win.height
@@ -639,7 +648,8 @@ def _get_epic_games() -> list[dict]:
             name = data.get("DisplayName") or data.get("AppName", "")
             if name:
                 games.append({"id": data.get("AppName", ""), "name": name})
-        except Exception:
+        except Exception as _e:
+            log_error(_e, context="actions.game_updater", severity="warning")
             continue
     return games
 
@@ -684,7 +694,7 @@ def _update_epic_games(epic_path: Path, game_name: str = None) -> str:
 
 
 def _schedule_daily_update(hour: int = 3, minute: int = 0) -> str:
-    task_name   = "BrahmaAI_GameUpdater"
+    task_name   = "REXAI_GameUpdater"
     script_path = Path(__file__).resolve()
     subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"], capture_output=True)
     for extra in (["/RL", "HIGHEST", "/RU", "SYSTEM"], []):
@@ -698,13 +708,13 @@ def _schedule_daily_update(hour: int = 3, minute: int = 0) -> str:
 
 
 def _cancel_scheduled_update() -> str:
-    result = subprocess.run(["schtasks", "/Delete", "/TN", "BrahmaAI_GameUpdater", "/F"],
+    result = subprocess.run(["schtasks", "/Delete", "/TN", "REXAI_GameUpdater", "/F"],
                             capture_output=True, text=True)
     return "Scheduled update cancelled." if result.returncode == 0 else "No scheduled update found."
 
 
 def _get_schedule_status() -> str:
-    result = subprocess.run(["schtasks", "/Query", "/TN", "BrahmaAI_GameUpdater", "/FO", "LIST"],
+    result = subprocess.run(["schtasks", "/Query", "/TN", "REXAI_GameUpdater", "/FO", "LIST"],
                             capture_output=True, text=True)
     if result.returncode != 0:
         return "No scheduled game update found."

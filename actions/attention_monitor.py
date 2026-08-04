@@ -17,6 +17,7 @@ import ctypes
 from ctypes import wintypes
 
 import pyautogui
+from core.error_handler import log_error
 
 try:
     import psutil
@@ -151,8 +152,8 @@ def _parse_toast_payload(payload: bytes | str | None) -> tuple[str, list[str], l
                 val = (node.get(attr) or "").strip()
                 if val:
                     actions.append(val)
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.attention_monitor", severity="warning")
 
     flat = " ".join(texts + actions + [raw]).lower()
     kind = "call" if any(k in flat for k in _CALL_HINTS) else "message"
@@ -188,8 +189,8 @@ def _collect_text_snapshot(win, limit: int = 18) -> list[str]:
         title = _norm(win.window_text())
         if title:
             out.append(title)
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.attention_monitor", severity="warning")
 
     try:
         desc = win.descendants()
@@ -279,14 +280,14 @@ def _enum_visible_windows() -> list[dict]:
                 "class": _window_class(hwnd),
                 "pid": _window_pid(hwnd),
             })
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.attention_monitor", severity="warning")
         return True
 
     try:
         user32.EnumWindows(callback, 0)
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.attention_monitor", severity="warning")
     return results
 
 
@@ -316,20 +317,20 @@ def _cleanup_current_audio() -> None:
     if _current_player_alias is not None:
         try:
             ctypes.windll.winmm.mciSendStringW(f"stop {_current_player_alias}", None, 0, None)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.attention_monitor", severity="warning")
         try:
             ctypes.windll.winmm.mciSendStringW(f"close {_current_player_alias}", None, 0, None)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.attention_monitor", severity="warning")
         _current_player_alias = None
 
     if _current_audio_path is not None:
         try:
             if os.path.exists(_current_audio_path):
                 os.remove(_current_audio_path)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.attention_monitor", severity="warning")
         _current_audio_path = None
 
 
@@ -347,13 +348,13 @@ def speak_native(text: str) -> None:
 
     try:
         _cleanup_current_audio()
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.attention_monitor", severity="warning")
 
-    audio_path = os.path.join(tempfile.gettempdir(), f"brahma_edge_tts_{uuid.uuid4().hex}.mp3")
+    audio_path = os.path.join(tempfile.gettempdir(), f"rex_edge_tts_{uuid.uuid4().hex}.mp3")
     try:
         # Use a male neural voice for app speech so daily briefing and alerts sound
-        # closer to Brahma's normal male audio output.
+        # closer to REX's normal male audio output.
         communicator = edge_tts.Communicate(text, voice="en-US-GuyNeural")
         communicator.save_sync(audio_path)
     except Exception as exc:  # pragma: no cover
@@ -361,7 +362,7 @@ def speak_native(text: str) -> None:
         _cleanup_current_audio()
         return
 
-    player_alias = f"brahma_tts_{uuid.uuid4().hex}"
+    player_alias = f"rex_tts_{uuid.uuid4().hex}"
     try:
         result = ctypes.windll.winmm.mciSendStringW(
             f'open "{audio_path}" type mpegvideo alias {player_alias}',
@@ -404,15 +405,15 @@ def _focus_window_by_app(app: str) -> bool:
             if _match_app(title, proc) == app:
                 try:
                     win.set_focus()
-                except Exception:
-                    pass
+                except Exception as _e:
+                    log_error(_e, context="actions.attention_monitor", severity="warning")
                 try:
                     win.restore()
-                except Exception:
-                    pass
+                except Exception as _e:
+                    log_error(_e, context="actions.attention_monitor", severity="warning")
                 return True
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.attention_monitor", severity="warning")
     return False
 
 
@@ -437,12 +438,12 @@ def _click_best_button(app: str, action: str) -> bool:
                         try:
                             ctrl.click_input()
                             return True
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-    except Exception:
-        pass
+                        except Exception as _e:
+                            log_error(_e, context="actions.attention_monitor", severity="warning")
+            except Exception as _e:
+                log_error(_e, context="actions.attention_monitor", severity="warning")
+    except Exception as _e:
+        log_error(_e, context="actions.attention_monitor", severity="warning")
     return False
 
 
@@ -458,8 +459,8 @@ def handle_call_action(event: dict, action: str) -> str:
             try:
                 pyautogui.press("enter")
                 return f"Tried to pick up the call on {event.get('app', 'the app')}."
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="actions.attention_monitor", severity="warning")
         return f"I found the call on {event.get('app', 'the app')}, but could not confirm the answer button."
 
     if action in {"ignore", "decline", "reject", "cut"}:
@@ -469,8 +470,8 @@ def handle_call_action(event: dict, action: str) -> str:
             try:
                 pyautogui.press("esc")
                 return f"Tried to decline the call on {event.get('app', 'the app')}."
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="actions.attention_monitor", severity="warning")
         return f"I found the call on {event.get('app', 'the app')}, but could not confirm the decline button."
 
     return "Unknown call action."
@@ -627,7 +628,7 @@ class AttentionMonitor:
                 continue
 
             hay = f"{title} {win.get('class') or ''} {proc_name}".lower()
-            if "brahma" in hay:
+            if "rex" in hay:
                 continue
 
             if app in {"Zoom", "Teams", "WhatsApp"} and _contains_any(hay, ("meeting", "call", "incoming", "ringing", "conference", "joined")):

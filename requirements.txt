@@ -1,7 +1,6 @@
 sounddevice
 google-genai
 google-generativeai
-pillow
 requests
 python-kasa
 beautifulsoup4

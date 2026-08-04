@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
 )
 
 from smart_home import SmartHomeService
+from core.error_handler import log_error
 
 
 BG = "#050608"
@@ -377,7 +378,7 @@ class AddDeviceDialog(QDialog):
             self._fields[key] = edit
             self._auth_form.addRow(label, edit)
         self._account_label = QLineEdit()
-        self._account_label.setPlaceholderText("Example: Home, Suryaansh, Bedroom Hub")
+        self._account_label.setPlaceholderText("Example: Home, chuckee, Bedroom Hub")
         self._auth_form.addRow("Device label", self._account_label)
 
     def _build_scan_results(self):
@@ -688,7 +689,7 @@ class _DeviceTile(ClickableFrame):
             self.select_requested.emit(str(device_id))
 
 
-class BrahmaHomePage(QWidget):
+class REXHomePage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._service = SmartHomeService()
@@ -700,8 +701,8 @@ class BrahmaHomePage(QWidget):
         self._activity_items: list[dict[str, Any]] = []
         self._device_columns_cached = 0
 
-        self.setObjectName("BrahmaHomePageModern")
-        self.setStyleSheet(f"QWidget#BrahmaHomePageModern {{ background: {BG}; }} QScrollArea {{ background: transparent; border: none; }}")
+        self.setObjectName("REXHomePageModern")
+        self.setStyleSheet(f"QWidget#REXHomePageModern {{ background: {BG}; }} QScrollArea {{ background: transparent; border: none; }}")
 
         root = QHBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 16)
@@ -809,10 +810,10 @@ class BrahmaHomePage(QWidget):
         row = QHBoxLayout()
         row.setSpacing(12)
         text = QVBoxLayout()
-        title = QLabel("BRAHMA HOME")
+        title = QLabel("REX HOME")
         title.setFont(QFont("Segoe UI", 24, QFont.Weight.Black))
         title.setStyleSheet(f"color: {TEXT}; letter-spacing: 1px;")
-        subtitle = QLabel("Control your smart home with Brahma AI.")
+        subtitle = QLabel("Control your smart home with REX.")
         subtitle.setFont(QFont("Segoe UI", 11))
         subtitle.setStyleSheet(f"color: {TEXT_DIM};")
         text.addWidget(title)
@@ -938,7 +939,7 @@ class BrahmaHomePage(QWidget):
         lbl.setFont(QFont("Segoe UI", 9))
         lbl.setStyleSheet(f"color: {TEXT_DIM};")
         
-        word = QLabel("Brahma")
+        word = QLabel("REX")
         word.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         word.setStyleSheet(f"color: {ACCENT};")
         
@@ -1335,13 +1336,15 @@ class BrahmaHomePage(QWidget):
         if hasattr(self, "_voice_state_lbl") and isinstance(getattr(self, "_voice_state_lbl"), QLabel):
             try:
                 self._voice_state_lbl.setText(f"{self._voice_state}...")
-            except Exception:
-                pass
+            except Exception as _e:
+
+                log_error(_e, context="smart_home_page_new", severity="debug")
         if hasattr(self, "_voice_state_small") and isinstance(getattr(self, "_voice_state_small"), QLabel):
             try:
                 self._voice_state_small.setText(self._voice_state)
-            except Exception:
-                pass
+            except Exception as _e:
+
+                log_error(_e, context="smart_home_page_new", severity="debug")
 
     def _animate_voice(self):
         self._voice_phase += 1
@@ -1356,7 +1359,7 @@ class BrahmaHomePage(QWidget):
                 bar.setFixedHeight(max(6, min(24, height)))
                 bar.setStyleSheet(f"background: {'rgba(255,69,69,0.35)' if self._voice_state in ('Listening', 'Executing') else 'rgba(255,255,255,0.15)'}; border-radius: 2px;")
         if hasattr(self, "_voice_cmd_lbl") and self._voice_cmd_lbl:
-            self._voice_cmd_lbl.setText({"Idle": '"Brahma"', "Listening": '"Turn bedroom fan to speed 4"', "Thinking": '"Understanding..."', "Executing": '"Applying command..."', "Completed": '"Done"'}.get(self._voice_state, '"Brahma"'))
+            self._voice_cmd_lbl.setText({"Idle": '"REX"', "Listening": '"Turn bedroom fan to speed 4"', "Thinking": '"Understanding..."', "Executing": '"Applying command..."', "Completed": '"Done"'}.get(self._voice_state, '"REX"'))
         if hasattr(self, "_mic_orb") and self._mic_orb:
             self._mic_orb.setText("🎙️" if self._voice_state in ("Listening", "Executing") else "🎙️")
 

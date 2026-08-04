@@ -1,0 +1,16 @@
+{
+  "name": "Garden Goats Dispatch",
+  "short_name": "Goats App",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#10b981",
+  "description": "Offline-capable route and job dispatch for field operations.",
+  "icons": [
+    {
+      "src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxOTIiIGhlaWdodD0iMTkyIiB2aWV3Qm94PSIwIDAgMjQgMjQiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzEwYjk4MSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwYXRoIGQ9Ik05IDIwbC01LjQ0Ny0yLjcyNEExIDEgMCAwMTMgMTYuMzgyVjUuNjE4YTEgMSAwIDAxMS40NDctLjg5NEw5IDdtMCAxM2w2LTNtLTYgM1Y3bTYgMTBsNC41NTMgMi4yNzZBMSAxIDAgMDAyMSAxOC4zODJWNy42MThhMSAxIDAgMDAtLjU1My0uODk0TDE1IDRtMCAxMlY0bTAgMEw5IDciPjwvcGF0aD48L3N2Zz4=",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    }
+  ]
+}

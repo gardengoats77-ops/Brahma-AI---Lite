@@ -16,6 +16,7 @@ import mss.tools
 import sounddevice as sd
 from google import genai
 from google.genai import types
+from core.error_handler import log_error
 
 try:
     import PIL.Image
@@ -72,8 +73,8 @@ def _extract_text(response) -> str:
                 txt = getattr(part, "text", None)
                 if txt:
                     parts.append(txt)
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.meeting_assistant", severity="warning")
     if parts:
         return "".join(parts).strip()
     return (getattr(response, "text", "") or "").strip()
@@ -122,8 +123,8 @@ def _audio_input_source() -> dict:
                 "loopback": True,
                 "label": dev.get("name") or f"WASAPI device {out_dev}",
             }
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.meeting_assistant", severity="warning")
 
     try:
         default_output = sd.default.device[1]
@@ -136,8 +137,8 @@ def _audio_input_source() -> dict:
                 "loopback": True,
                 "label": dev.get("name") or f"Default output {default_output}",
             }
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.meeting_assistant", severity="warning")
 
     return {}
 
@@ -275,8 +276,8 @@ class MeetingAssistant:
             try:
                 with self._audio_lock:
                     self._audio_buf.extend(indata.tobytes())
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="actions.meeting_assistant", severity="warning")
 
         try:
             with sd.InputStream(
@@ -358,7 +359,7 @@ class MeetingAssistant:
                 spoken = self._last_speech
 
                 prompt = f"""
-You are Brahma AI - Lite running in meeting mode on a Windows desktop.
+You are REX running in meeting mode on a Windows desktop.
 The screen belongs to a live Zoom, Microsoft Teams, WhatsApp call, or similar meeting.
 
 Tasks:

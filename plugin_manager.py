@@ -9,7 +9,7 @@ class PluginManager:
         self.base_dir = Path(base_dir)
         self.plugins_dir = self.base_dir / "plugins"
         self.plugins: list[Any] = []
-        self.brahma = None
+        self.rex = None
 
     def load_plugins(self) -> None:
         if not self.plugins_dir.exists():
@@ -33,15 +33,15 @@ class PluginManager:
             except Exception as exc:
                 print(f"[Plugins] Failed to load {p.name}: {exc}")
 
-    def register_brahma(self, brahma_obj) -> None:
-        self.brahma = brahma_obj
+    def register_rex(self, rex_obj) -> None:
+        self.rex = rex_obj
         for p in list(self.plugins):
             try:
-                fn = getattr(p, "on_brahma_created", None)
+                fn = getattr(p, "on_rex_created", None)
                 if callable(fn):
-                    fn(brahma_obj)
+                    fn(rex_obj)
             except Exception as exc:
-                print(f"[Plugins] on_brahma_created error: {exc}")
+                print(f"[Plugins] on_rex_created error: {exc}")
 
     def dispatch(self, hook: str, *args, **kwargs):
         """Call hook on plugins. If any plugin returns True, stop and return True."""
@@ -49,9 +49,9 @@ class PluginManager:
             try:
                 fn = getattr(p, hook, None)
                 if callable(fn):
-                    # call with brahma if plugin expects it
+                    # call with rex if plugin expects it
                     try:
-                        res = fn(*args, **kwargs, brahma=self.brahma)
+                        res = fn(*args, **kwargs, rex=self.rex)
                     except TypeError:
                         res = fn(*args, **kwargs)
                     if res is True:

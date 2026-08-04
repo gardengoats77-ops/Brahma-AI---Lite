@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 import send2trash
+from core.error_handler import log_error
 
 _FILE_TYPE_MAP = {
     "Images":    [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg", ".ico"],
@@ -275,7 +276,8 @@ def get_largest_files(path: str = "home", count: int = 10) -> str:
             if item.is_file():
                 try:
                     files.append((item.stat().st_size, item))
-                except Exception:
+                except Exception as _e:
+                    log_error(_e, context="actions.file_controller", severity="warning")
                     continue
 
         files.sort(reverse=True)

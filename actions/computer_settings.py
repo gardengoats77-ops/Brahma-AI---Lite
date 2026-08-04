@@ -6,6 +6,7 @@ import time
 import subprocess
 import platform
 from pathlib import Path
+from core.error_handler import log_error
 
 try:
     import pyautogui
@@ -41,8 +42,8 @@ def _get_macos_wifi_interface() -> str:
                 for j in range(i, min(i + 4, len(lines))):
                     if lines[j].startswith("Device:"):
                         return lines[j].split(":", 1)[1].strip()
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.computer_settings", severity="warning")
     return "en0" 
 
 def volume_up():
@@ -200,8 +201,8 @@ def snap_left():
         try:
             subprocess.run(["wmctrl", "-r", ":ACTIVE:", "-e", "0,0,0,960,1080"],
                 capture_output=True)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.computer_settings", severity="warning")
 
 def snap_right():
     if _OS == "Windows":
@@ -210,8 +211,8 @@ def snap_right():
         try:
             subprocess.run(["wmctrl", "-r", ":ACTIVE:", "-e", "0,960,0,960,1080"],
                 capture_output=True)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.computer_settings", severity="warning")
 
 def switch_window():
     if _OS == "Darwin": pyautogui.hotkey("command", "tab")

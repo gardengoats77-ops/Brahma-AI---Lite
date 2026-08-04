@@ -1,10 +1,11 @@
 # actions/open_app.py
-# Brahma AI - Cross-Platform App Launcher
+# REX - Cross-Platform App Launcher
 
 import time
 import subprocess
 import platform
 import shutil
+from core.error_handler import log_error
 
 try:
     import psutil
@@ -75,8 +76,8 @@ def _is_running(app_name: str) -> bool:
                     return True
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.open_app", severity="warning")
     return False
 
 
@@ -101,16 +102,16 @@ def _launch_macos(app_name: str) -> bool:
         if result.returncode == 0:
             time.sleep(1.0)
             return True
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.open_app", severity="warning")
 
     try:
         result = subprocess.run(["open", "-a", f"{app_name}.app"], capture_output=True, timeout=8)
         if result.returncode == 0:
             time.sleep(1.0)
             return True
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.open_app", severity="warning")
 
     try:
         import pyautogui
@@ -138,21 +139,21 @@ def _launch_linux(app_name: str) -> bool:
             subprocess.Popen([binary], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(1.0)
             return True
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.open_app", severity="warning")
 
     try:
         subprocess.run(["xdg-open", app_name], capture_output=True, timeout=5)
         return True
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.open_app", severity="warning")
 
     try:
         desktop_name = app_name.lower().replace(" ", "-")
         subprocess.run(["gtk-launch", desktop_name], capture_output=True, timeout=5)
         return True
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.open_app", severity="warning")
 
     return False
 

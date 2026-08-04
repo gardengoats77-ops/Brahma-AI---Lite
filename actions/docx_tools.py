@@ -1,5 +1,5 @@
 """
-docx_tools.py - Brahma AI Word / DOCX support
+docx_tools.py - REX Word / DOCX support
 
 Provides dedicated creation, editing, extraction, summarization, and opening
 workflows for editable Word documents.
@@ -14,8 +14,9 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from core.error_handler import log_error
 
-PROJECT_NAME = "Brahma AI - Lite"
+PROJECT_NAME = "REX"
 DEFAULT_OUTPUT_DIR = Path.home() / "Downloads"
 
 
@@ -54,8 +55,9 @@ def _open_file(path: Path) -> None:
             subprocess.Popen(["open", str(path)])
         else:
             subprocess.Popen(["xdg-open", str(path)])
-    except Exception:
-        pass
+    except Exception as _e:
+
+        log_error(_e, context="actions.docx_tools", severity="debug")
 
 
 def _get_api_key() -> str:
@@ -135,14 +137,15 @@ def _set_document_defaults(doc):
             style = doc.styles[style_name]
             style.font.name = font_name
             style.font.size = Pt(font_size)
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="actions.docx_tools", severity="debug")
 
 
 def _set_core_props(doc, title: str, author: str | None = None, subject: str | None = None):
     props = doc.core_properties
     props.title = title or PROJECT_NAME
-    props.author = author or "Suryaansh Tiwari"
+    props.author = author or "chuckee"
     props.subject = subject or "Word document"
     props.company = PROJECT_NAME
     props.created = datetime.now()
@@ -157,8 +160,9 @@ def _paragraph_text(paragraph) -> str:
         try:
             level = int(style_name.split()[-1])
             return f"{'#' * max(1, min(level, 3))} {text}"
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="actions.docx_tools", severity="debug")
     return text
 
 
@@ -273,7 +277,7 @@ def _create_letter(doc, params):
     date_value = (params.get("date") or datetime.now().strftime("%B %d, %Y")).strip()
     salutation = (params.get("salutation") or (f"Dear {recipient}," if recipient else "Dear Sir or Madam,")).strip()
     closing = (params.get("closing") or "Sincerely,").strip()
-    signature = (params.get("signature") or params.get("author") or "Suryaansh Tiwari").strip()
+    signature = (params.get("signature") or params.get("author") or "chuckee").strip()
     body = params.get("body") or params.get("content") or ""
     paragraphs = _normalize_list(params.get("paragraphs")) or [p.strip() for p in re.split(r"\n\s*\n", str(body)) if p.strip()]
 
@@ -350,11 +354,11 @@ def _create_generic(doc, params):
 
 def _docx_result_path(source_path: Path | None, action: str, output_path: str | None, title: str) -> Path:
     if output_path:
-        fallback = title or (source_path.stem if source_path else "Brahma_AI_Document")
+        fallback = title or (source_path.stem if source_path else "REX_AI_Document")
         return _resolve_output_path(output_path, title=fallback, ext=".docx", fallback_name=fallback)
     if source_path:
         return source_path.with_name(f"{source_path.stem}_{action}.docx")
-    return _resolve_output_path(None, title=title, ext=".docx", fallback_name="Brahma_AI_Document")
+    return _resolve_output_path(None, title=title, ext=".docx", fallback_name="REX_AI_Document")
 
 
 def _load_doc(path: Path):
@@ -367,7 +371,7 @@ def word_document(parameters: dict, player=None, speak=None) -> str:
     action = (params.get("action") or "create").lower().strip()
     file_path_str = (params.get("file_path") or "").strip()
     output_path_str = (params.get("output_path") or "").strip() or None
-    title = (params.get("title") or params.get("subject") or "Brahma AI Document").strip()
+    title = (params.get("title") or params.get("subject") or "REX Document").strip()
     doc_type = (params.get("doc_type") or params.get("template") or "").lower().strip()
 
     source_path = Path(file_path_str) if file_path_str else None

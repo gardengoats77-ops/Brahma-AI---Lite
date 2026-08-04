@@ -1,5 +1,5 @@
 """
-file_processor.py — Brahma AI Universal File Processor
+file_processor.py — REX Universal File Processor
 
 Supported types:
   image   → describe, ocr, resize, convert, compress, crop
@@ -25,7 +25,7 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 
-import google.generativeai as genai
+from google import genai
 
 
 def _get_api_key() -> str:
@@ -35,8 +35,10 @@ def _get_api_key() -> str:
 
 
 def _gemini_client():
-    genai.configure(api_key=_get_api_key())
-    return genai.GenerativeModel("gemini-2.5-flash")
+    return genai.Client(
+        api_key=_get_api_key(),
+        http_options={"api_version": "v1beta"},
+    )
 
 
 def _detect_type(path: Path) -> str:

@@ -4,6 +4,7 @@ import subprocess
 import os
 import sys
 from datetime import datetime
+from core.error_handler import log_error
 
 
 def reminder(
@@ -60,8 +61,9 @@ try:
     for freq in [800, 1000, 1200]:
         winsound.Beep(freq, 200)
         time.sleep(0.1)
-except Exception:
-    pass
+except Exception as _e:
+
+    log_error(_e, context="actions.reminder", severity="debug")
 
 try:
     from win10toast import ToastNotifier
@@ -75,14 +77,16 @@ except Exception:
     try:
         import subprocess
         subprocess.run(["msg", "*", "/TIME:30", "{safe_message}"], shell=True)
-    except Exception:
-        pass
+    except Exception as _e:
+
+        log_error(_e, context="actions.reminder", severity="debug")
 
 time.sleep(3)
 try:
     os.remove(__file__)
-except Exception:
-    pass
+except Exception as _e:
+
+    log_error(_e, context="actions.reminder", severity="debug")
 '''
         with open(notify_script, "w", encoding="utf-8") as f:
             f.write(script_code)
@@ -132,16 +136,18 @@ except Exception:
 
         try:
             os.remove(xml_path)
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="actions.reminder", severity="debug")
 
         if result.returncode != 0:
             err = result.stderr.strip() or result.stdout.strip()
             print(f"[Reminder] ❌ schtasks failed: {err}")
             try:
                 os.remove(notify_script)
-            except Exception:
-                pass
+            except Exception as _e:
+
+                log_error(_e, context="actions.reminder", severity="debug")
             return "I couldn't schedule the reminder due to a system error."
 
         if player:

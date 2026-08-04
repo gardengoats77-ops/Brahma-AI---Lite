@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/Brahma_Lite_Logo.png" alt="Brahma AI - Lite" width="260" />
+  <img src="assets/REX_Lite_Logo.png" alt="REX" width="260" />
 </p>
 
-<h1 align="center">Brahma AI - Lite</h1>
+<h1 align="center">REX</h1>
 
 <p align="center">
   <strong>Open-source Windows desktop AI assistant</strong> for voice, automation, productivity, and intelligent workflows.
@@ -18,13 +18,13 @@
 
 ## Overview
 
-Brahma AI - Lite is an open-source desktop assistant designed for Windows power users. It unites voice and text input with intelligent automation, productivity workflows, document generation, and adaptive screen-aware actions.
+REX is an open-source desktop assistant designed for Windows power users. It unites voice and text input with intelligent automation, productivity workflows, document generation, and adaptive screen-aware actions.
 
 - Live voice and text interaction via Gemini with OpenRouter fallback
 - Automatic daily briefing with interruption-aware audio playback
 - Desktop automation for apps, windows, files, and browser workflows
 - Office content generation for PowerPoint, Word, spreadsheets, and PDF
-- Built-in website and workspace creation through Brahma's local workspace generator
+- Built-in website and workspace creation through REX's local workspace generator
 - Discord collaboration, reminders, meeting assistant, and notifications
 
 ## Why It Stands Out
@@ -66,10 +66,10 @@ Brahma AI - Lite is an open-source desktop assistant designed for Windows power 
 
 ## How It Works
 
-Brahma AI - Lite is built on a layered desktop architecture that separates UI, AI session management, and tool execution.
+REX is built on a layered desktop architecture that separates UI, AI session management, and tool execution.
 
 - `main.py` initializes the application, launches the UI, and manages the AI runtime.
-- `BrahmaLive` owns the live AI session, audio queues, and command routing.
+- `REXLive` owns the live AI session, audio queues, and command routing.
 - `actions/` contains modular tools for automation, document generation, notifications, meetings, and search.
 - `AttentionMonitor` captures external events and notification text, then speaks alerts using Edge TTS.
 - `daily_briefing.py` constructs the morning briefing text and triggers playback after startup.
@@ -89,8 +89,8 @@ Brahma AI - Lite is built on a layered desktop architecture that separates UI, A
 ### 1. Clone the repository
 
 ```powershell
-git clone https://github.com/titechprabhasolutions/Brahma-AI---Lite.git
-cd "Brahma AI - Lite"
+git clone https://github.com/titechprabhasolutions/REX-AI---Lite.git
+cd "REX"
 ```
 
 ### 2. Create a virtual environment
@@ -143,7 +143,7 @@ python main.py
 For a cleaner Windows launch without console output:
 
 ```powershell
-start_brahma.vbs
+start_rex.vbs
 ```
 
 ## Configuration
@@ -154,11 +154,11 @@ start_brahma.vbs
 
 ## Plugin System
 
-You can extend Brahma AI with lightweight Python plugins placed in the `plugins/` folder. Plugins are simple `*.py` files that export one or more hook functions:
+You can extend REX with lightweight Python plugins placed in the `plugins/` folder. Plugins are simple `*.py` files that export one or more hook functions:
 
-- `on_brahma_created(brahma)` — called when the `BrahmaLive` instance is created
-- `on_startup(brahma)` — called once during app startup after plugins are registered
-- `on_text_command(text, source, brahma=None)` — called for each incoming text command; return `True` to mark the command handled and stop further processing
+- `on_rex_created(rex)` — called when the `REXLive` instance is created
+- `on_startup(rex)` — called once during app startup after plugins are registered
+- `on_text_command(text, source, rex=None)` — called for each incoming text command; return `True` to mark the command handled and stop further processing
 
 Example: `plugins/example_plugin.py` demonstrates the hooks.
 
@@ -182,7 +182,7 @@ To enable plugins, simply drop your plugin file into the `plugins/` folder and r
 - Redesigned gesture HUD for hand landmark control.
 - Improved cursor mapping for better desktop reach and direction.
 - Added idle speech prompts for proactive engagement.
-- Tightened the developer workflow so Brahma uses the local workspace generator for websites and keeps coding tasks in the main app flow.
+- Tightened the developer workflow so REX uses the local workspace generator for websites and keeps coding tasks in the main app flow.
 
 ## Community
 
@@ -196,4 +196,4 @@ This project is licensed under a custom source-available license. See `LICENSE` 
 
 - Suryaansh Tiwari
 
-Please preserve attribution and keep credentials secure when building on top of Brahma AI - Lite.
+Please preserve attribution and keep credentials secure when building on top of REX.

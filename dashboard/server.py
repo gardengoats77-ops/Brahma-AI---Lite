@@ -1,5 +1,5 @@
 """
-dashboard/server.py — Brahma Local HTTP Dashboard
+dashboard/server.py — REX Local HTTP Dashboard
 
 Plain HTTP on port 8000 (no SSL warnings, no firewall issues).
 Security at the application layer: AES-256-CBC with session-key-derived key.
@@ -11,16 +11,40 @@ Install deps:  pip install fastapi "uvicorn[standard]" cryptography
 import asyncio
 import base64
 import hashlib
+import json
+import os
 import re
 import secrets
 import socket
 import string
 import time
+from datetime import timedelta
 from pathlib import Path
+from core.error_handler import log_error
+from core.repository import (
+    ConnectionLease,
+    ConversationMessage,
+    ConversationRepository,
+    DeviceClaim,
+    MessageBatch,
+    decode_session,
+    encode_session,
+    get_repository,
+    get_store_path,
+)
+
+try:
+    from livekit import api as _livekit_api
+except ImportError:
+    _livekit_api = None  # type: ignore[assignment]
+
+REX_STORE_PATH = get_store_path()
+REX_TOKEN_TTL_SECONDS = max(60, int(os.getenv("REX_TOKEN_TTL_SECONDS") or os.getenv("JARVIS_TOKEN_TTL_SECONDS") or "900"))
+REX_ROOM_PREFIX = os.getenv("REX_ROOM_NAME") or os.getenv("JARVIS_ROOM_NAME") or "rex"
 
 _DEPS_OK = False
 try:
-    from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+    from fastapi import Body, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
     from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
     import uvicorn
     _DEPS_OK = True
@@ -32,27 +56,32 @@ _UPLOAD_OK = False
 try:
     from fastapi import UploadFile, File as FastAPIFile
     _UPLOAD_OK = True
-except Exception:
-    pass
+except Exception as _e:
+
+    log_error(_e, context="dashboard.server", severity="error")
 
 BASE_DIR    = Path(__file__).resolve().parent.parent
 STATIC_DIR  = Path(__file__).parent / "static"
+DISPATCH_DIR = STATIC_DIR / "dispatch"
+HUD_DIR      = STATIC_DIR / "hud"
 PORT        = 8000
 MAX_UPLOAD_MB = 500
+DISPATCH_STATE_FILE = BASE_DIR / "data" / "dispatch_state.json"
 
 
 def _make_uploads_dir() -> Path:
     """Return (and create) the cross-platform uploads folder."""
     for candidate in [
-        Path.home() / "Downloads" / "Brahma Uploads",
-        Path.home() / "Documents" / "Brahma Uploads",
+        Path.home() / "Downloads" / "REX Uploads",
+        Path.home() / "Documents" / "REX Uploads",
         BASE_DIR / "uploads",
     ]:
         try:
             candidate.mkdir(parents=True, exist_ok=True)
             return candidate
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="dashboard.server", severity="error")
     return BASE_DIR / "uploads"
 
 
@@ -79,7 +108,7 @@ _KEY_CHARS = [c for c in (string.ascii_uppercase + string.digits)
               if c not in ('O', 'I', 'L', '0', '1')]
 
 # ── AES-256-CBC ───────────────────────────────────────────────────────────────
-_AES_SALT = b'BRAHMA-DASHBOARD-v1'
+_AES_SALT = b'REX-DASHBOARD-v1'
 
 
 def _derive_key(session_key: str) -> bytes:
@@ -121,8 +150,8 @@ def _ensure_network_access(port: int) -> None:
     if sys.platform == "win32":
         import ctypes, time
 
-        port_rule = f"Brahma Dashboard Port {port}"
-        prog_rule  = "Brahma Dashboard Python"
+        port_rule = f"REX Dashboard Port {port}"
+        prog_rule  = "REX Dashboard Python"
         py_exe     = sys.executable
 
         def _netsh_rule_exists(name: str) -> bool:
@@ -178,15 +207,16 @@ def _ensure_network_access(port: int) -> None:
             )
 
         bat_body = "\r\n".join(bat_lines) + "\r\n"
-        fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="brahma_fw_")
+        fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="rex_fw_")
         try:
             os.write(fd, bat_body.encode("mbcs"))   # Windows cmd.exe expects ANSI
             os.close(fd)
         except Exception:
             try:
                 os.close(fd)
-            except Exception:
-                pass
+            except Exception as _e:
+
+                log_error(_e, context="dashboard.server", severity="error")
             return
 
         # ── Try running directly (succeeds when already admin) ────────────────
@@ -198,11 +228,13 @@ def _ensure_network_access(port: int) -> None:
                 print(f"[Dashboard] Firewall configured for port {port}.")
                 try:
                     os.unlink(bat_path)
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    log_error(_e, context="dashboard.server", severity="error")
                 return
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="dashboard.server", severity="error")
 
         # ── ShellExecuteW: native UAC elevation (most reliable on Windows) ────
         # ShellExecuteW with verb "runas" always shows the UAC dialog regardless
@@ -226,7 +258,7 @@ def _ensure_network_access(port: int) -> None:
                 print("[Dashboard] Refresh your phone browser to connect.")
             else:
                 print("[Dashboard] Setup was not allowed.")
-                print("[Dashboard] Phone connections may fail until Brahma is run as Administrator.")
+                print("[Dashboard] Phone connections may fail until REX is run as Administrator.")
         except Exception as e:
             print(f"[Dashboard] Firewall setup error: {e}")
         finally:
@@ -235,8 +267,9 @@ def _ensure_network_access(port: int) -> None:
                 time.sleep(5)
                 try:
                     os.unlink(path)
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    log_error(_e, context="dashboard.server", severity="error")
             threading.Thread(target=_cleanup, args=(bat_path,), daemon=True).start()
         return
 
@@ -264,8 +297,9 @@ def _ensure_network_access(port: int) -> None:
                  f' with administrator privileges'],
                 timeout=60,
             )
-        except Exception:
-            pass  # macOS firewall is off by default — silent failure is fine
+        except Exception as _e:
+
+            log_error(_e, context="dashboard.server", severity="error")  # macOS firewall is off by default — silent failure is fine
         return
 
     # ── Linux ─────────────────────────────────────────────────────────────────
@@ -275,8 +309,9 @@ def _ensure_network_access(port: int) -> None:
                 r = _quiet_run(prefix + cmd, capture_output=True, timeout=30)
                 if r.returncode == 0:
                     return True
-            except Exception:
-                pass
+            except Exception as _e:
+
+                log_error(_e, context="dashboard.server", severity="error")
         return False
 
     try:  # ufw
@@ -377,29 +412,33 @@ def _local_ip() -> str:
                 ip = getattr(addr, 'address', '') or ''
                 if ip and '.' in ip:
                     _add_candidate(ip)
-    except Exception:
-        pass
+    except Exception as _e:
+
+        log_error(_e, context="dashboard.server", severity="error")
 
     try:
         host = socket.gethostname()
         for info in socket.getaddrinfo(host, None, socket.AF_INET):
             _add_candidate(info[4][0])
-    except Exception:
-        pass
+    except Exception as _e:
+
+        log_error(_e, context="dashboard.server", severity="error")
 
     try:
         for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
             _add_candidate(ip)
-    except Exception:
-        pass
+    except Exception as _e:
+
+        log_error(_e, context="dashboard.server", severity="error")
 
     try:
         import subprocess
         r = _quiet_run(['ipconfig'], capture_output=True, text=True, timeout=8)
         for ip in re.findall(r'IPv4[^:]*:\s*([0-9]+(?:\.[0-9]+){3})', r.stdout):
             _add_candidate(ip)
-    except Exception:
-        pass
+    except Exception as _e:
+
+        log_error(_e, context="dashboard.server", severity="error")
 
     for probe in ('8.8.8.8', '1.1.1.1', '192.168.1.1'):
         try:
@@ -408,8 +447,9 @@ def _local_ip() -> str:
             s.connect((probe, 80))
             _add_candidate(s.getsockname()[0], preferred=True)
             s.close()
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="dashboard.server", severity="error")
 
     for ip in preferred_private:
         if _is_private_ipv4(ip):
@@ -430,6 +470,76 @@ def _read(name: str) -> str:
     return (STATIC_DIR / name).read_text(encoding="utf-8")
 
 
+# ── Dispatch unlock page ──────────────────────────────────────────────────────
+# Served instead of the dispatch PWA until the visitor proves they hold a valid
+# REX one-time key (same pool as Mobile Connect).
+_DISPATCH_LOCK_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>REX — Dispatch Unlock</title>
+<style>
+  :root { --bg:#050608; --red:#ff4545; --text:#f2f4f7; --muted:rgba(242,244,247,.58); }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif;
+         min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .card { width:100%; max-width:360px; background:rgba(255,255,255,.03);
+          border:1px solid rgba(255,255,255,.1); border-radius:18px; padding:28px; text-align:center; }
+  h1 { font-size:18px; letter-spacing:.14em; text-transform:uppercase; margin-bottom:6px; }
+  h1 em { color:var(--red); font-style:normal; text-shadow:0 0 16px rgba(255,69,69,.5); }
+  p { color:var(--muted); font-size:13px; line-height:1.55; margin:8px 0 18px; }
+  input { width:100%; padding:13px 14px; border-radius:10px; border:1px solid rgba(255,255,255,.14);
+          background:rgba(255,255,255,.05); color:var(--text); font-size:22px; text-align:center;
+          letter-spacing:.4em; text-transform:uppercase; outline:none; }
+  input:focus { border-color:var(--red); box-shadow:0 0 0 3px rgba(255,69,69,.12); }
+  button { width:100%; margin-top:12px; padding:12px; border-radius:10px; border:none;
+           background:var(--red); color:#fff; font-weight:700; font-size:14px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  .err { color:#f87171; font-size:12px; margin-top:10px; min-height:16px; }
+  .hint { font-size:11px; color:var(--muted); margin-top:14px; line-height:1.6; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1><em>REX</em> Dispatch</h1>
+  <p>Enter the 6-character key from REX's <strong>Mobile Connect</strong> to unlock your dispatch data.</p>
+  <input id="pin" maxlength="6" autocomplete="off" inputmode="text" placeholder="\u2022\u2022\u2022\u2022\u2022\u2022" autofocus>
+  <button id="go">Unlock</button>
+  <div class="err" id="err"></div>
+  <div class="hint">Press <strong>Mobile Connect</strong> in the REX desktop app to get a key.<br>Already paired? This unlocks automatically.</div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+function setCookie(v){ document.cookie = 'rex_token=' + encodeURIComponent(v) + '; path=/; SameSite=Lax'; }
+function go(token){ setCookie(token); location.href = '/dispatch'; }
+$('go').addEventListener('click', async () => {
+  const pin = $('pin').value.trim().toUpperCase();
+  if (pin.length < 6) { $('err').textContent = 'Enter the 6-character key.'; return; }
+  $('go').disabled = true; $('err').textContent = 'Unlocking\u2026';
+  try {
+    const r = await fetch('/api/dispatch/pair', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({pin})});
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || 'Invalid or expired key');
+    localStorage.setItem('jarvis_device_token', d.device_token);
+    go(d.token);
+  } catch (e) { $('err').textContent = e.message; $('go').disabled = false; }
+});
+$('pin').addEventListener('keydown', e => { if (e.key === 'Enter') $('go').click(); });
+(async () => {
+  const dev = localStorage.getItem('jarvis_device_token');
+  if (!dev) return;
+  try {
+    const r = await fetch('/api/device-login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({device_token: dev})});
+    const d = await r.json();
+    if (d.ok && d.token) { go(d.token); }
+  } catch (e) {}
+})();
+</script>
+</body>
+</html>"""
+
+
 def _ensure_ssl_certs() -> bool:
     """Create local self-signed certs when missing so phones can use HTTPS."""
     certs = BASE_DIR / "config" / "certs"
@@ -448,7 +558,7 @@ def _ensure_ssl_certs() -> bool:
         certs.mkdir(parents=True, exist_ok=True)
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         subject = issuer = x509.Name([
-            x509.NameAttribute(NameOID.COMMON_NAME, "Brahma AI Local Remote"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "REX Local Remote"),
         ])
         alt_names = [
             x509.DNSName("localhost"),
@@ -456,8 +566,9 @@ def _ensure_ssl_certs() -> bool:
         ]
         try:
             alt_names.append(x509.IPAddress(ipaddress.ip_address(_local_ip())))
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="dashboard.server", severity="error")
         cert = (
             x509.CertificateBuilder()
             .subject_name(subject)
@@ -503,6 +614,7 @@ class DashboardServer:
         self._uploads_dir                 = UPLOADS_DIR
         self._login_html                  = _read("login.html")
         self._app_html                    = _read("app.html")
+        self._repo: ConversationRepository = get_repository()
         self.app                          = self._build_app()
 
     # ── one-time key management ───────────────────────────────────────────
@@ -513,6 +625,23 @@ class DashboardServer:
         key = ''.join(secrets.choice(_KEY_CHARS) for _ in range(6))
         self._pending_keys[key] = now + expiry_secs
         return key
+
+    # ── dispatch data persistence (cross-device sync) ────────────────────
+
+    def load_dispatch_state(self) -> dict:
+        """Load the synced dispatch state (properties + completion history)."""
+        try:
+            return json.loads(DISPATCH_STATE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def save_dispatch_state(self, state: dict) -> None:
+        """Persist dispatch state to disk so it survives browser cache clears."""
+        try:
+            DISPATCH_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            DISPATCH_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        except Exception as _e:
+            log_error(_e, context="dashboard.server.save_dispatch_state", severity="warning")
     def get_url(self) -> str:
         return f"http://{self._ip}:{PORT}"
 
@@ -578,6 +707,130 @@ class DashboardServer:
         async def login_page():
             return HTMLResponse(self._login_html)
 
+        # ── Garden Goats Dispatch (embedded PWA) ───────────────────────────
+        # Served from the same origin as the dashboard so phone + desktop
+        # share one URL (http://<ip>:8000/dispatch). The app is PIN-protected
+        # with the same one-time-key pool as Mobile Connect: /dispatch serves a
+        # lock page until the visitor proves they hold a valid key, then sets
+        # the rex_token cookie. Data sync (/api/dispatch/*) reuses the same
+        # token for auth and persists state server-side so jobs survive browser
+        # cache clears and are shared across devices.
+        #
+        # The files live at dashboard/static/dispatch/ — a static copy of the
+        # standalone goats-dispatch/ app. To refresh after changing the source:
+        #   cp goats-dispatch/index.html goats-dispatch/sw.js goats-dispatch/manifest.json \
+        #      projects/REX-AI/dashboard/static/dispatch/
+        # or run scripts/sync_dispatch.py (one-shot or --watch).
+        # Do NOT run goats-dispatch/server.py while REX is up — it also binds
+        # port 8000 and would conflict with the dashboard.
+
+        def _dispatch_auth(req: Request) -> bool:
+            """Accept the rex_token cookie (set by the lock page) or a Bearer header."""
+            tok = req.cookies.get("rex_token", "") or req.headers.get("authorization", "").removeprefix("Bearer ").strip()
+            return bool(tok) and tok in self._tokens
+
+        @app.get("/dispatch", response_class=HTMLResponse)
+        async def dispatch_page(req: Request):
+            """No trailing slash: enforce the PIN gate, then redirect to /dispatch/
+            so the PWA's relative assets (./sw.js, ./manifest.json) resolve under
+            the /dispatch/ mount instead of the server root."""
+            if not _dispatch_auth(req):
+                return HTMLResponse(_DISPATCH_LOCK_HTML)
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse("/dispatch/")
+
+        @app.get("/dispatch/", response_class=HTMLResponse)
+        async def dispatch_page_slash(req: Request):
+            if not _dispatch_auth(req):
+                return HTMLResponse(_DISPATCH_LOCK_HTML)
+            try:
+                return HTMLResponse((DISPATCH_DIR / "index.html").read_text(encoding="utf-8"))
+            except Exception:
+                return HTMLResponse("<!DOCTYPE html><html><body><h2>Dispatch app not found</h2></body></html>", status_code=404)
+
+        @app.get("/dispatch/index.html", response_class=HTMLResponse)
+        async def dispatch_index(req: Request):
+            """Explicit index.html so the service worker's precache entry works."""
+            if not _dispatch_auth(req):
+                return HTMLResponse(_DISPATCH_LOCK_HTML)
+            try:
+                return HTMLResponse((DISPATCH_DIR / "index.html").read_text(encoding="utf-8"))
+            except Exception:
+                return HTMLResponse("<!DOCTYPE html><html><body><h2>Dispatch app not found</h2></body></html>", status_code=404)
+
+        @app.get("/dispatch/sw.js")
+        async def dispatch_sw():
+            try:
+                return FileResponse(str(DISPATCH_DIR / "sw.js"), media_type="application/javascript")
+            except Exception:
+                return JSONResponse({"error": "Not found"}, status_code=404)
+
+        @app.get("/dispatch/manifest.json")
+        async def dispatch_manifest():
+            try:
+                return FileResponse(str(DISPATCH_DIR / "manifest.json"), media_type="application/manifest+json")
+            except Exception:
+                return JSONResponse({"error": "Not found"}, status_code=404)
+
+        @app.post("/api/dispatch/pair")
+        async def dispatch_pair(req: Request):
+            """Validate a one-time REX key and return an auth token + device token."""
+            try:
+                body = await req.json()
+            except Exception:
+                return JSONResponse({"ok": False, "error": "Bad request"}, status_code=400)
+            entered = str(body.get("pin", "")).strip().upper()
+            now = time.time()
+            if entered in self._pending_keys and self._pending_keys[entered] > now:
+                del self._pending_keys[entered]          # one-time use
+                tok = secrets.token_urlsafe(32)
+                dev_tok = secrets.token_urlsafe(32)
+                self._tokens.add(tok)
+                self._token_keys[tok] = entered
+                self._device_sessions[dev_tok] = {"session_key": entered}
+                self._aes_key(entered)
+                if self._connect_callback:
+                    self._connect_callback()
+                asyncio.create_task(self.broadcast(
+                    {"type": "sys", "text": "Dispatch app unlocked."}
+                ))
+                return JSONResponse({"ok": True, "token": tok, "device_token": dev_tok})
+            return JSONResponse({"ok": False, "error": "Invalid or expired key"}, status_code=401)
+
+        @app.get("/api/dispatch/load")
+        async def dispatch_load(req: Request):
+            """Fetch the server-side copy of dispatch state for cross-device sync."""
+            if not _dispatch_auth(req):
+                return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+            return JSONResponse({"ok": True, "state": self.load_dispatch_state()})
+
+        @app.post("/api/dispatch/save")
+        async def dispatch_save(req: Request):
+            """Persist dispatch state server-side (properties + completion history)."""
+            if not _dispatch_auth(req):
+                return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+            try:
+                body = await req.json()
+            except Exception:
+                return JSONResponse({"ok": False, "error": "Bad request"}, status_code=400)
+            self.save_dispatch_state(body.get("state") or {})
+            return JSONResponse({"ok": True})
+
+        # ── BLACKOPS HUD (embedded tactical frontend) ──────────────────────
+
+        from fastapi.staticfiles import StaticFiles
+
+        @app.get("/hud", response_class=HTMLResponse)
+        @app.get("/hud/", response_class=HTMLResponse)
+        async def hud_page():
+            try:
+                return HTMLResponse((HUD_DIR / "index.html").read_text(encoding="utf-8"))
+            except Exception:
+                return HTMLResponse("<!DOCTYPE html><html><body><h2>BLACKOPS HUD not found</h2></body></html>", status_code=404)
+
+        if (HUD_DIR / "assets").is_dir():
+            app.mount("/hud/assets", StaticFiles(directory=str(HUD_DIR / "assets")), name="hud_assets")
+
         @app.get("/", response_class=HTMLResponse)
         async def index():
             # Auth is handled client-side via sessionStorage bearer token.
@@ -622,7 +875,7 @@ class DashboardServer:
   h2{color:#f87171;margin-bottom:12px}p{color:#5e6a7e;font-size:14px}
 </style></head>
 <body><div><h2>Link Expired</h2>
-<p>Press <strong style="color:#dde3ed">Mobile Connect</strong> in Brahma to get a new QR code.</p>
+<p>Press <strong style="color:#dde3ed">Mobile Connect</strong> in REX to get a new QR code.</p>
 </div></body></html>""")
 
             del self._pending_keys[key]
@@ -653,7 +906,7 @@ class DashboardServer:
   localStorage.setItem('jarvis_device_token','{dev_tok}');
   setTimeout(function(){{location.replace('/')}},400);
 </script>
-<p>Connecting to Brahma…</p>
+<p>Connecting to REX…</p>
 </body></html>""")
 
         @app.post("/api/device-login")
@@ -783,8 +1036,9 @@ class DashboardServer:
                 except Exception as exc:
                     try:
                         dest.unlink(missing_ok=True)
-                    except Exception:
-                        pass
+                    except Exception as _e:
+
+                        log_error(_e, context="dashboard.server", severity="error")
                     return JSONResponse({"error": str(exc)}, status_code=500)
 
                 asyncio.create_task(self.broadcast({
@@ -814,8 +1068,9 @@ class DashboardServer:
                     reverse=True,
                 ):
                     files.append({"name": f.name, "size": f.stat().st_size})
-            except Exception:
-                pass
+            except Exception as _e:
+
+                log_error(_e, context="dashboard.server", severity="error")
             return JSONResponse({"files": files})
 
         @app.get("/uploads/{filename}")
@@ -829,6 +1084,161 @@ class DashboardServer:
             if not path.exists() or not path.is_file():
                 return JSONResponse({"error": "Not found"}, status_code=404)
             return FileResponse(str(path), filename=safe)
+
+        # ── BLACKOPS HUD syndication bridge ───────────────────────────────
+        # The HUD's useWebSocket.tsx connects here (no auth — LAN-local) and
+        # fans agent/alert/log events to every other connected client (cross-
+        # tab / cross-device live syndication). Messages are opaque JSON
+        # relays; the HUD's own broadcastLog/broadcastAgent already applied
+        # the change locally, so the sender is excluded from the fan-out.
+
+        import threading
+
+        # ── REX conversation context + device endpoints ─────────────────────
+        # Shared SQLite-backed persistence (WAL mode) — the same store the
+        # agent worker writes to. These endpoints replace the proxy bridge;
+        # the dashboard is now self-contained without the root backend.
+
+        @app.post("/api/session")
+        async def create_session(
+            device_id: str = Query(..., min_length=1, max_length=128),
+            user_id: str | None = Query(default=None, max_length=128),
+        ):
+            safe_device = self._repo._check_identifier(device_id, "device_id")
+            resolved_user = self._repo.resolve_user(f"session-{safe_device}", safe_device, user_id)
+            return {"session_token": encode_session(safe_device, resolved_user), "device_id": safe_device, "user_id": resolved_user}
+
+        @app.get("/api/token")
+        async def token(
+            identity: str | None = Query(default=None, max_length=128),
+            device_id: str | None = Query(default=None, max_length=128),
+            user_id: str | None = Query(default=None, max_length=128),
+            room: str | None = Query(default=None, max_length=128),
+            authorization: str | None = Header(default=None),
+        ):
+            if _livekit_api is None:
+                raise HTTPException(status_code=503, detail="LiveKit server SDK is not installed in this REX deployment")
+            if not os.getenv("LIVEKIT_API_KEY") or not os.getenv("LIVEKIT_API_SECRET"):
+                raise HTTPException(status_code=503, detail="LiveKit credentials are not configured")
+            participant_identity = identity or f"rex-{secrets.token_urlsafe(9)}"
+            participant_identity = self._repo._check_identifier(participant_identity, "identity")
+            resolved_device = self._repo._check_identifier(device_id or participant_identity, "device_id")
+            session = decode_session(authorization, resolved_device, user_id)
+            resolved_user = self._repo.resolve_user(participant_identity, resolved_device, session["user_id"])
+            if user_id and resolved_user != user_id:
+                raise HTTPException(status_code=403, detail="Session user does not match requested user")
+            room_name = room or f"{REX_ROOM_PREFIX}-{resolved_user}-{resolved_device}"
+            room_name = self._repo._check_identifier(room_name, "room")
+            import json as _json
+            metadata = _json.dumps({"device_id": resolved_device, "user_id": resolved_user, "identity": participant_identity}, separators=(",", ":"))
+            access_token = (
+                _livekit_api.AccessToken(os.environ["LIVEKIT_API_KEY"], os.environ["LIVEKIT_API_SECRET"])
+                .with_identity(participant_identity)
+                .with_name("REX user")
+                .with_metadata(metadata)
+                .with_ttl(timedelta(seconds=REX_TOKEN_TTL_SECONDS))
+                .with_grants(_livekit_api.VideoGrants(room_join=True, room=room_name, can_publish=True, can_subscribe=True, can_publish_data=True))
+                .to_jwt()
+            )
+            return {"token": access_token, "url": os.environ.get("LIVEKIT_URL", ""), "room": room_name, "identity": participant_identity, "device_id": resolved_device, "user_id": resolved_user, "expires_in": REX_TOKEN_TTL_SECONDS}
+
+        @app.get("/api/context/{identity}")
+        async def get_context(
+            identity: str,
+            device_id: str | None = Query(default=None, max_length=128),
+            user_id: str | None = Query(default=None, max_length=128),
+            authorization: str | None = Header(default=None),
+        ):
+            safe_device = self._repo._check_identifier(device_id or identity, "device_id")
+            session = decode_session(authorization, safe_device, user_id)
+            return self._repo.history(identity, safe_device, session["user_id"])
+
+        @app.get("/api/context/user/{user_id}")
+        async def get_user_context(user_id: str, device_id: str = Query(..., max_length=128), authorization: str | None = Header(default=None)):
+            safe_user_id = self._repo._check_identifier(user_id, "user_id")
+            safe_device = self._repo._check_identifier(device_id, "device_id")
+            decode_session(authorization, safe_device, safe_user_id)
+            return self._repo.user_history(safe_user_id)
+
+        @app.post("/api/context/{identity}/messages")
+        async def append_context(
+            identity: str,
+            batch: MessageBatch = Body(...),
+            device_id: str | None = Query(default=None, max_length=128),
+            user_id: str | None = Query(default=None, max_length=128),
+            authorization: str | None = Header(default=None),
+        ):
+            safe_device = self._repo._check_identifier(device_id or identity, "device_id")
+            session = decode_session(authorization, safe_device, user_id)
+            return self._repo.add_messages(identity, safe_device, session["user_id"], batch.messages)
+
+        @app.post("/api/device/{device_id}/claim")
+        async def claim_device(device_id: str, claim: DeviceClaim, authorization: str | None = Header(default=None)):
+            safe_device = self._repo._check_identifier(device_id, "device_id")
+            decode_session(authorization, safe_device)
+            self._repo.claim_device(safe_device, claim.user_id)
+            return {"device_id": safe_device, "user_id": claim.user_id, "session_token": encode_session(safe_device, claim.user_id)}
+
+        @app.post("/api/device/{device_id}/connection")
+        async def activate_connection(device_id: str, lease: ConnectionLease, authorization: str | None = Header(default=None)):
+            safe_device = self._repo._check_identifier(device_id, "device_id")
+            decode_session(authorization, safe_device)
+            if lease.device_id != safe_device:
+                raise HTTPException(status_code=400, detail="device_id mismatch")
+            return self._repo.activate_connection(lease)
+
+        @app.get("/api/device/{device_id}/connection")
+        async def get_connection(device_id: str, authorization: str | None = Header(default=None)):
+            safe_device = self._repo._check_identifier(device_id, "device_id")
+            decode_session(authorization, safe_device)
+            return {"device_id": safe_device, "active": self._repo.get_active_connection(safe_device)}
+
+        @app.delete("/api/device/{device_id}/connection/{connection_id}")
+        async def release_connection(device_id: str, connection_id: str, authorization: str | None = Header(default=None)):
+            safe_device = self._repo._check_identifier(device_id, "device_id")
+            decode_session(authorization, safe_device)
+            return {"released": self._repo.release_connection(safe_device, connection_id)}
+
+        # ── BLACKOPS HUD syndication bridge ───────────────────────────────
+        # The HUD's useWebSocket.tsx connects here (no auth — LAN-local) and
+        # fans agent/alert/log events to every other connected client (cross-
+        # tab / cross-device live syndication). Messages are opaque JSON
+        # relays; the HUD's own broadcastLog/broadcastAgent already applied
+        # the change locally, so the sender is excluded from the fan-out.
+
+        import threading
+
+        _hud_clients: set[WebSocket] = set()
+        _hud_lock = threading.Lock()
+
+        async def _hud_relay(message: str, exclude: WebSocket | None = None) -> None:
+            with _hud_lock:
+                clients = list(_hud_clients)
+            for client in clients:
+                if client is exclude:
+                    continue
+                try:
+                    await client.send_text(message)
+                except Exception:
+                    with _hud_lock:
+                        _hud_clients.discard(client)
+
+        @app.websocket("/api/ws")
+        async def hud_ws_ep(websocket: WebSocket) -> None:
+            await websocket.accept()
+            with _hud_lock:
+                _hud_clients.add(websocket)
+            try:
+                while True:
+                    payload = await websocket.receive_text()
+                    await _hud_relay(payload, exclude=websocket)
+            except WebSocketDisconnect:
+                pass
+            except Exception:
+                pass
+            finally:
+                with _hud_lock:
+                    _hud_clients.discard(websocket)
 
         @app.websocket("/ws")
         async def ws_ep(websocket: WebSocket, token: str = ""):
@@ -889,5 +1299,13 @@ class DashboardServer:
         )
 
         print(f"[Dashboard] http://{self._ip}:{PORT}")
-        print("[Dashboard] Press 'Mobile Connect' in Brahma UI to get the QR code.")
+        print("[Dashboard] Press 'Mobile Connect' in REX UI to get the QR code.")
         await uvicorn.Server(cfg).serve()
+
+
+# Module-level app instance for uvicorn discovery (uvicorn dashboard.server:app)
+try:
+    _server_instance = DashboardServer()
+    app = _server_instance.app
+except Exception:
+    app = None

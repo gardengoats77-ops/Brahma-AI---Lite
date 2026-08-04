@@ -8,6 +8,7 @@ import tempfile
 import platform
 from pathlib import Path
 from datetime import datetime
+from core.error_handler import log_error
 
 try:
     import pyautogui
@@ -89,7 +90,7 @@ def _execute_generated_code(code: str, player=None) -> str:
     sandbox["__builtins__"]["print"] = lambda *a: output_lines.append(" ".join(str(x) for x in a))
 
     try:
-        exec(compile(code, "<brahma_desktop>", "exec"), sandbox)
+        exec(compile(code, "<rex_desktop>", "exec"), sandbox)
         return "\n".join(output_lines) if output_lines else "Done."
     except Exception as e:
         print(f"[Desktop] Exec error: {e}\nCode:\n{code[:300]}")
@@ -221,8 +222,8 @@ def set_wallpaper_from_url(url: str) -> str:
         result = set_wallpaper(str(tmp))
         try:
             tmp.unlink()
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.desktop", severity="debug")
         return result
     except Exception as e:
         return f"Could not download wallpaper: {e}"

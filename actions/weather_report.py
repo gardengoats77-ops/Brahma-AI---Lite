@@ -2,6 +2,7 @@
 
 import webbrowser
 from urllib.parse import quote_plus
+from core.error_handler import log_error
 
 
 def weather_action(
@@ -48,8 +49,9 @@ def weather_action(
                 query=search_query,
                 response=msg
             )
-        except Exception:
-            pass  
+        except Exception as _e:
+
+            log_error(_e, context="actions.weather_report", severity="debug")  
 
     return msg
 
@@ -57,6 +59,7 @@ def weather_action(
 def _speak_and_log(message: str, player=None):
     if player:
         try:
-            player.write_log(f"Brahma AI: {message}")
-        except Exception:
-            pass
+            player.write_log(f"REX: {message}")
+        except Exception as _e:
+
+            log_error(_e, context="actions.weather_report", severity="debug")

@@ -10,6 +10,7 @@ from typing import Any
 from .providers.base import ProviderField, SmartHomeProvider
 from .providers.builtin import built_in_provider_classes
 from .storage import BASE_DIR, SmartHomeStorage
+from core.error_handler import log_error
 
 
 @dataclass(frozen=True)
@@ -151,8 +152,9 @@ class SmartHomeService:
         runtime_device["provider_credentials"] = (account or {}).get("credentials", {})
         try:
             provider.execute(runtime_device, "restart", {})
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="smart_home.service", severity="warning")
         self._storage.log_activity(device["name"], "Restart command sent.")
 
     def voice_state_for_command(self, command: str) -> list[tuple[str, str]]:
@@ -215,8 +217,9 @@ class SmartHomeService:
                         # on
                         self.execute_device_action(device_id, "power", {"is_on": True})
                         time.sleep(0.3)
-                    except Exception:
-                        pass
+                    except Exception as _e:
+
+                        log_error(_e, context="smart_home.service", severity="warning")
                 results.append(f"Power-cycled {device.get('name')} {repeat_count} time(s)")
                 continue
 

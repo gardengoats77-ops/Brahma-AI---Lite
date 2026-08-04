@@ -10,10 +10,11 @@ import urllib.error
 import zipfile
 from pathlib import Path
 from typing import Callable, Optional
+from core.error_handler import log_error
 
-GITHUB_REPO_URL = "https://github.com/titechprabhasolutions/Brahma-AI---Lite"
-GITHUB_API_URL = "https://api.github.com/repos/titechprabhasolutions/Brahma-AI---Lite/commits/main"
-GITHUB_ZIP_URL = "https://github.com/titechprabhasolutions/Brahma-AI---Lite/archive/refs/heads/main.zip"
+GITHUB_REPO_URL = "https://github.com/titechprabhasolutions/REX-AI---Lite"
+GITHUB_API_URL = "https://api.github.com/repos/titechprabhasolutions/REX-AI---Lite/commits/main"
+GITHUB_ZIP_URL = "https://github.com/titechprabhasolutions/REX-AI---Lite/archive/refs/heads/main.zip"
 
 
 class AutoUpdater:
@@ -30,8 +31,8 @@ class AutoUpdater:
         try:
             if self.state_file.exists():
                 return json.loads(self.state_file.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="updater", severity="debug")
         return {}
 
     def _write_state(self, commit_sha: str) -> None:
@@ -40,8 +41,8 @@ class AutoUpdater:
                 json.dumps({"commit_sha": commit_sha}, indent=2),
                 encoding="utf-8",
             )
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="updater", severity="debug")
 
     def _get_local_commit(self) -> Optional[str]:
         try:
@@ -56,8 +57,8 @@ class AutoUpdater:
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     return result.stdout.strip()
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="updater", severity="debug")
 
         state = self._read_state()
         return state.get("commit_sha")
@@ -67,7 +68,7 @@ class AutoUpdater:
             GITHUB_API_URL,
             headers={
                 "Accept": "application/vnd.github+json",
-                "User-Agent": "BrahmaAI-Updater",
+                "User-Agent": "REXAI-Updater",
             },
         )
         with urllib.request.urlopen(req, timeout=15) as response:
@@ -75,7 +76,7 @@ class AutoUpdater:
             return payload.get("sha")
 
     def should_update(self) -> bool:
-        if os.environ.get("BRAHMA_SKIP_UPDATE", "").lower() in {"1", "true", "yes"}:
+        if os.environ.get("REX_SKIP_UPDATE", "").lower() in {"1", "true", "yes"}:
             self._log("update check skipped by environment")
             return False
 
@@ -98,7 +99,7 @@ class AutoUpdater:
 
         self._log(f"updating from {GITHUB_REPO_URL}")
         try:
-            with tempfile.TemporaryDirectory(prefix="brahma-update-", dir=str(self.base_dir)) as temp_dir:
+            with tempfile.TemporaryDirectory(prefix="rex-update-", dir=str(self.base_dir)) as temp_dir:
                 archive_path = Path(temp_dir) / "repo.zip"
                 self._log("downloading latest source snapshot")
                 urllib.request.urlretrieve(GITHUB_ZIP_URL, archive_path)
@@ -109,7 +110,7 @@ class AutoUpdater:
                 extracted_root = Path(temp_dir)
                 repo_dir = None
                 for candidate in extracted_root.iterdir():
-                    if candidate.is_dir() and candidate.name.startswith("Brahma-AI---Lite"):
+                    if candidate.is_dir() and candidate.name.startswith("REX-AI---Lite"):
                         repo_dir = candidate
                         break
 

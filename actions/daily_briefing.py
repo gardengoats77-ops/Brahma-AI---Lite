@@ -10,21 +10,22 @@ import urllib.request
 import json
 from pathlib import Path
 from datetime import datetime
+from core.error_handler import log_error
 
 # Fallback values
 DEFAULT_CITY = "Kalyan"
 
 def get_time_based_greeting() -> str:
-    """Returns a time-based greeting for Suryaansh."""
+    """Returns a time-based greeting for chuckee."""
     hour = datetime.now().hour
     if 5 <= hour < 12:
-        greeting = "Good morning, Suryaansh."
+        greeting = "Good morning, chuckee."
     elif 12 <= hour < 17:
-        greeting = "Good afternoon, Suryaansh."
+        greeting = "Good afternoon, chuckee."
     elif 17 <= hour < 22:
-        greeting = "Good evening, Suryaansh."
+        greeting = "Good evening, chuckee."
     else:
-        greeting = "Welcome back, Suryaansh."
+        greeting = "Welcome back, chuckee."
         
     random_suffixes = [
         "Ready to help.",
@@ -91,8 +92,8 @@ def get_system_status_info() -> tuple[str, dict]:
             state["power_plugged"] = plugged
         else:
             status_parts.append("Your system is running on wall power.")
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.daily_briefing", severity="warning")
         
     # CPU & RAM info
     try:
@@ -100,16 +101,16 @@ def get_system_status_info() -> tuple[str, dict]:
         ram = int(psutil.virtual_memory().percent)
         cpu_speed_str = "low" if cpu < 30 else "moderate" if cpu < 70 else "high"
         status_parts.append(f"CPU usage is {cpu_speed_str} at {cpu} percent, and RAM usage is at {ram} percent.")
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.daily_briefing", severity="warning")
         
     # Storage remaining
     try:
         total, used, free = shutil.disk_usage(os.path.expanduser("~"))
         free_gb = int(free / (1024 ** 3))
         status_parts.append(f"You have {free_gb} gigabytes of storage remaining on your primary drive.")
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.daily_briefing", severity="warning")
         
     # Internet status
     try:
@@ -139,8 +140,8 @@ def get_workspace_summary_info() -> tuple[str, dict]:
                 summary_parts.append(f"I found {downloads_count} files in your Downloads folder.")
             else:
                 summary_parts.append("Your Downloads folder is clean.")
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.daily_briefing", severity="warning")
     state["downloads_count"] = downloads_count
             
     # Screenshots count
@@ -153,12 +154,12 @@ def get_workspace_summary_info() -> tuple[str, dict]:
             screenshots_count += len([f for f in downloads_dir.iterdir() if f.is_file() and "screenshot" in f.name.lower()])
         if screenshots_count > 0:
             summary_parts.append(f"There are {screenshots_count} screenshots saved on your system.")
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.daily_briefing", severity="warning")
     state["screenshots_count"] = screenshots_count
         
     # Recent workspace project
-    projects_dir = Path.home() / "Desktop" / "BrahmaProjects"
+    projects_dir = Path.home() / "Desktop" / "REXProjects"
     recent_project_name = None
     recent_project_time = 0
     if projects_dir.exists():
@@ -169,8 +170,8 @@ def get_workspace_summary_info() -> tuple[str, dict]:
                 recent_project_name = subdirs[0].name.replace("-", " ").title()
                 recent_project_time = subdirs[0].stat().st_mtime
                 summary_parts.append(f"Your most active workspace is {recent_project_name}.")
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.daily_briefing", severity="warning")
             
     state["recent_project_name"] = recent_project_name
     state["recent_project_time"] = recent_project_time
@@ -211,7 +212,7 @@ def compile_daily_briefing(settings: dict) -> str:
     if settings.get("daily_briefing_voice_greeting", True):
         briefing_sections.append(get_time_based_greeting())
     else:
-        briefing_sections.append("Welcome back, Suryaansh.")
+        briefing_sections.append("Welcome back, chuckee.")
         
     # Collect weather and system status and workspace status
     system_state = {}

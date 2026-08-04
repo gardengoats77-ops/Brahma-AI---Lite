@@ -1,5 +1,5 @@
 """
-office_builder.py - Brahma AI office document generation
+office_builder.py - REX office document generation
 
 Creates PowerPoint presentations and Excel workbooks from structured inputs.
 """
@@ -13,6 +13,8 @@ import re
 import sys
 from pathlib import Path
 
+from core.error_handler import log_error
+
 from actions.ppt_template_workflow import (
     build_presentation_from_template,
     infer_presentation_profile,
@@ -20,8 +22,8 @@ from actions.ppt_template_workflow import (
 )
 
 
-PROJECT_NAME = "Brahma AI - Lite"
-DEFAULT_OUTPUT_DIR = Path.home() / "Desktop" / "BrahmaAI"
+PROJECT_NAME = "REX"
+DEFAULT_OUTPUT_DIR = Path.home() / "Desktop" / "REXAI"
 
 
 def _sanitize_filename(name: str, default: str) -> str:
@@ -48,7 +50,7 @@ def _resolve_output_path(output_path: str | None, title: str, ext: str) -> Path:
         return path
 
     DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    return DEFAULT_OUTPUT_DIR / f"{_sanitize_filename(title, 'brahma_ai_output')}{ext}"
+    return DEFAULT_OUTPUT_DIR / f"{_sanitize_filename(title, 'rex_ai_output')}{ext}"
 
 
 def _parse_json_arg(value, fallback):
@@ -99,8 +101,8 @@ def _open_file(path: Path) -> None:
             subprocess.Popen(["open", str(path)])
             return
         subprocess.Popen(["xdg-open", str(path)])
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.office_builder", severity="debug")
 
 
 def _import_pptx():
@@ -384,8 +386,8 @@ def create_presentation(parameters: dict, player=None) -> str:
                     player.add_system_message(
                         f"Template-based presentation failed, falling back to the built-in designer: {exc}"
                     )
-                except Exception:
-                    pass
+                except Exception as _e:
+                    log_error(_e, context="actions.office_builder", severity="debug")
 
     def add_textbox(slide, left, top, width, height, text, font_size=18, color_key="text", bold=False,
                     font_name="Aptos", align=None, italic=False, all_caps=False):
