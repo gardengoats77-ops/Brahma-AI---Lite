@@ -43,6 +43,15 @@ class PluginManager:
             except Exception as exc:
                 print(f"[Plugins] on_rex_created error: {exc}")
 
+    def get_handler(self, tool_name: str):
+        """Return None — user plugins do not register tool handlers.
+
+        This method exists so that PluginManager can safely be passed where
+        a PluginRegistry is expected (e.g. the dispatcher's plugin_registry
+        fallback) without raising AttributeError.
+        """
+        return None
+
     def dispatch(self, hook: str, *args, **kwargs):
         """Call hook on plugins. If any plugin returns True, stop and return True."""
         for p in list(self.plugins):

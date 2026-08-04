@@ -37,6 +37,7 @@ from or_client import client as openrouter_client
 from workspace_store import store as workspace_store
 from smart_home.service import SmartHomeService
 from plugin_manager import PluginManager
+from plugin_registry import registry as plugin_registry_singleton
 from core.error_handler import log_error, handle_errors, get_logger
 from core.dispatcher import dispatcher
 from core.action_registry import register_all_actions
@@ -1253,14 +1254,15 @@ class RexLive:
         result = "Done."
 
         try:
-            pm = getattr(self, "plugin_manager", None)
+            # plugin_registry_singleton is the action-tool registry (actions/ directory).
+            # self.plugin_manager is the user-plugin manager (plugins/ directory) — different system.
             result = await dispatcher.dispatch(
                 name, args,
                 ui=self.ui,
                 speak=self.speak,
                 loop=loop,
                 smart_home_service=self._smart_home,
-                plugin_registry=pm,
+                plugin_registry=plugin_registry_singleton,
             )
 
 
