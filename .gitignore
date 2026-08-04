@@ -9,6 +9,9 @@ __pycache__/
 downloads/
 
 # Local secrets and environment-specific config
+.env
+.freebuff/
+.jarvis-data/
 config/api_keys.json
 config/app_settings.json
 config/discord_bot.json
