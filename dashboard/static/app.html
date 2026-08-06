@@ -3,20 +3,20 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Brahma Remote</title>
+  <title>Almighty Remote</title>
   <script src="/static/crypto.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --bg:      #020305;
-      --surface: rgba(255,255,255,0.045);
-      --border:  rgba(255,255,255,0.12);
-      --accent:  #ff4545;
-      --adim:    rgba(255,69,69,0.14);
-      --text:    #ffffff;
-      --muted:   rgba(255,255,255,0.58);
-      --green:   #ffffff;
-      --gdim:    rgba(255,255,255,0.12);
+      --ink:    #0A0C10;
+      --surface: rgba(244,242,234,0.035);
+      --border:  rgba(244,242,234,0.10);
+      --accent:  #FFD23C;
+      --adim:    rgba(255,210,60,0.13);
+      --text:    #F4F2EA;
+      --muted:   rgba(244,242,234,0.55);
+      --green:   #FFD23C;
+      --gdim:    rgba(255,210,60,0.12);
     }
     html, body {
       height: 100%; background: var(--bg); color: var(--text);
@@ -27,16 +27,16 @@
     /* ── APP LAYOUT ── */
     html, body {
       height: 100%; width: 100%; margin: 0; padding: 0;
-      background: radial-gradient(circle at top left, rgba(255,69,69,0.15), transparent 24%),
-                  radial-gradient(circle at bottom right, rgba(255,69,69,0.08), transparent 26%),
-                  #020305;
+      background: radial-gradient(circle at top left, rgba(255,210,60,0.08), transparent 26%),
+                  radial-gradient(circle at bottom right, rgba(255,210,60,0.05), transparent 28%),
+                  #0A0C10;
       color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       overflow: hidden;
     }
     .app-shell {
       display: grid;
-      grid-template-columns: 280px 1fr;
+      grid-template-columns: 280px minmax(0, 1fr);
       height: 100%;
       gap: 18px;
       padding: 18px;
@@ -71,8 +71,8 @@
       justify-content: center;
       padding: 6px 12px;
       border-radius: 999px;
-      background: rgba(255,69,69,0.12);
-      color: var(--muted);
+      background: var(--adim);
+      color: var(--accent);
       font-size: 10px;
       font-weight: 700;
       letter-spacing: 0.08em;
@@ -100,8 +100,8 @@
     }
     .nav-item.active,
     .nav-item:hover {
-      background: rgba(255,69,69,0.12);
-      border-color: rgba(255,69,69,0.38);
+      background: var(--adim);
+      border-color: rgba(255,210,60,0.38);
       color: var(--text);
     }
     .nav-item::after {
@@ -201,7 +201,7 @@
     }
     .content-grid {
       display: grid;
-      grid-template-columns: minmax(0, 1.8fr) minmax(360px, 1fr);
+      grid-template-columns: minmax(0, 1.8fr) minmax(0, 1fr);
       gap: 18px;
       min-height: 0;
     }
@@ -291,7 +291,7 @@
     .bar-fill {
       height: 100%;
       width: 0;
-      background: linear-gradient(90deg, #ff6a6a, #ff5252);
+      background: linear-gradient(90deg, #d4ab1f, #FFD23C);
       border-radius: 999px;
       transition: width 0.2s ease;
     }
@@ -311,8 +311,8 @@
       width: 32px;
       height: 32px;
       border-radius: 12px;
-      border: 1px solid rgba(255,255,255,0.08);
-      background: rgba(255,69,69,0.12);
+      border: 1px solid var(--border);
+      background: var(--adim);
       color: var(--accent);
       display: grid;
       place-items: center;
@@ -343,8 +343,8 @@
       gap: 8px;
     }
     .activity-item.system {
-      border-color: rgba(255,69,69,0.24);
-      background: rgba(255,69,69,0.08);
+      border-color: rgba(255,210,60,0.24);
+      background: rgba(255,210,60,0.07);
     }
     .activity-item .item-title { font-size: 13px; font-weight: 700; color: var(--text); }
     .activity-item .item-text { font-size: 13px; color: var(--muted); line-height: 1.5; }
@@ -394,12 +394,30 @@
       border: 1px solid rgba(255,255,255,0.08);
     }
     #inp { flex: 1; min-width: 0; }
+    .btn,
+    .btn-send {
+      padding: 10px 16px;
+      border-radius: 12px;
+      border: none;
+      cursor: pointer;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      font-size: 11px;
+      transition: filter 0.15s, transform 0.1s;
+    }
+    .btn-send {
+      background: var(--accent);
+      color: #0A0C10;
+    }
+    .btn-send:hover { filter: brightness(1.07); }
+    .btn-send:active { transform: scale(0.98); }
     .btn-secondary {
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(244,242,234,0.05);
+      border: 1px solid var(--border);
       color: var(--muted);
     }
-    .btn-secondary:hover { background: rgba(255,255,255,0.09); }
+    .btn-secondary:hover { background: rgba(244,242,234,0.09); }
     .status-pill {
       display: inline-flex;
       align-items: center;
@@ -417,9 +435,40 @@
     .status-pill .dot { width: 8px; height: 8px; }
     .pill.on .dot { background: var(--accent); }
     .voice-card .pill { margin:0; }
+
+    /* ── signature: the listening line (echo of the login screen) ── */
+    .listen {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      height: 16px;
+      margin-top: 10px;
+      opacity: 0.9;
+    }
+    .listen i {
+      width: 3px;
+      border-radius: 2px;
+      background: var(--accent);
+      animation: breathe 2.4s ease-in-out infinite;
+    }
+    .listen i:nth-child(2n)  { animation-delay: -0.4s; }
+    .listen i:nth-child(3n)  { animation-delay: -0.9s; }
+    .listen i:nth-child(1)   { height: 6px; }
+    .listen i:nth-child(2)   { height: 12px; }
+    .listen i:nth-child(3)   { height: 16px; }
+    .listen i:nth-child(4)   { height: 11px; }
+    .listen i:nth-child(5)   { height: 7px; }
+    @keyframes breathe {
+      0%, 100% { transform: scaleY(0.5);  opacity: 0.45; }
+      50%      { transform: scaleY(1);    opacity: 0.95; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .listen i { animation: none; }
+      .btn, .btn-send { transition: none; }
+    }
     @media (max-width: 1240px) {
-      .app-shell { grid-template-columns: 1fr; }
-      .content-grid { grid-template-columns: 1fr; }
+      .app-shell { grid-template-columns: minmax(0, 1fr); }
+      .content-grid { grid-template-columns: minmax(0, 1fr); }
       .right-panel { grid-template-rows: repeat(2, minmax(180px, auto)); }
     }
     @media (max-width: 720px) {
@@ -427,6 +476,8 @@
       .sidebar { padding: 18px; }
       .topbar, .devices-panel, .activity-card, .voice-card, footer { padding: 18px; }
       .devices-grid { grid-template-columns: 1fr; }
+      .topbar { min-height: 0; }
+      .main-panel { gap: 12px; }
     }
   </style>
 </head>
@@ -435,12 +486,13 @@
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand">
-        <div class="logo"><em>Brahma</em></div>
+        <div class="logo"><em>Almighty</em></div>
         <div class="badge">Online</div>
       </div>
+      <div class="listen" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
       <div class="nav">
         <div class="nav-item active">Dashboard</div>
-        <div class="nav-item">Brahma Home</div>
+        <div class="nav-item">Almighty Home</div>
         <div class="nav-item">Settings</div>
       </div>
       <div class="status-card">
@@ -449,9 +501,9 @@
         <div id="pill" class="pill on"><span class="dot"></span><span id="st">System Online</span></div>
       </div>
       <div class="user-card">
-        <div class="user-icon">S</div>
+        <div class="user-icon">__USER_INITIAL__</div>
         <div>
-          <div class="user-name">Suryaansh</div>
+          <div class="user-name">__USER_NAME__</div>
           <div class="user-role">Local Profile</div>
         </div>
       </div>
@@ -459,8 +511,8 @@
     <section class="main-panel">
       <div class="topbar">
         <div>
-          <div class="page-title">Brahma Home</div>
-          <div class="page-subtitle">Control your home with Brahma AI.</div>
+          <div class="page-title">Almighty Home</div>
+          <div class="page-subtitle">Control your home with Almighty AI.</div>
         </div>
         <div class="top-actions">
           <div class="badge">Home Status</div>
@@ -563,11 +615,11 @@
             <div class="voice-header">
               <div>
                 <div class="section-title">Voice Control</div>
-                <div class="section-subtitle">Use Brahma voice commands to control devices quickly.</div>
+                <div class="section-subtitle">Use Almighty voice commands to control devices quickly.</div>
               </div>
               <div class="status-pill"><span class="dot"></span>Listening</div>
             </div>
-            <div class="voice-note">Say “Brahma” followed by your command, or type it below.</div>
+            <div class="voice-note">Say “Almighty” followed by your command, or type it below.</div>
             <div class="voice-actions">
               <button class="btn btn-secondary" onclick="doWake()">Wake</button>
               <button class="btn btn-send" onclick="doSend()">Send</button>
@@ -576,7 +628,7 @@
         </div>
       </div>
       <footer>
-        <input id="inp" placeholder="Send a command to Brahma…" autocomplete="off">
+        <input id="inp" placeholder="Send a command to Almighty…" autocomplete="off">
         <label class="btn-attach" for="file-inp" title="Send file">📎</label>
         <input type="file" id="file-inp" multiple accept="*/*" style="display:none">
         <button id="mic-btn" onclick="doMic()" title="Voice command">🎤</button>
@@ -602,7 +654,7 @@
     }
 
     // ── Local session encryption (CryptoJS) ──────────────────────────────────
-    const _AES_SALT = 'BRAHMA-DASHBOARD-v1';
+    const _AES_SALT = 'ALMIGHTY-DASHBOARD-v1';
     let _aesKey = null;
 
     function _initCrypto(key) {
@@ -642,7 +694,7 @@
     const _wsUrl   = `${_wsProto}://${location.host}/ws?token=${encodeURIComponent(_authToken)}`;
     const ws       = new WebSocket(_wsUrl);
 
-    ws.onopen    = () => { sys('Remote session active.'); toast('Connected to Brahma'); };
+    ws.onopen    = () => { sys('Remote session active.'); toast('Connected to Almighty'); };
     ws.onclose   = () => sys('Connection lost — refresh to reconnect.');
     ws.onerror   = () => sys('Connection error.');
     ws.onmessage = (e) => {
@@ -666,7 +718,7 @@
       const d = document.createElement('div');
       if (speaker === 'jarvis') {
         d.className = 'msg msg-j';
-        d.innerHTML = `<div class="lbl">Brahma AI</div>${esc(text)}`;
+        d.innerHTML = `<div class="lbl">Almighty AI</div>${esc(text)}`;
       } else {
         d.className = 'msg msg-u';
         d.innerHTML = `<div class="lbl">You</div>${esc(text)}`;
@@ -872,8 +924,8 @@
       const card = document.createElement('div');
       card.id = 'voice-setup';
       card.style.cssText = [
-        'align-self:stretch', 'background:rgba(255,69,69,0.08)',
-        'border:1px solid rgba(255,69,69,0.28)', 'border-radius:14px',
+        'align-self:stretch', 'background:rgba(255,210,60,0.07)',
+        'border:1px solid rgba(255,210,60,0.26)', 'border-radius:14px',
         'padding:16px 18px', 'font-size:13px', 'line-height:1.8',
         'animation:pop 0.18s ease'
       ].join(';');

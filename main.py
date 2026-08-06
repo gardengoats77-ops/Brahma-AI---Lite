@@ -12,6 +12,11 @@ import traceback
 import os
 from pathlib import Path
 
+# Linux/macOS compatibility: stub Windows-only modules (winreg, pywinauto,
+# pycaw, ...) so the app can import and run its cross-platform parts.
+# Must run before any module-scope Windows import (e.g. actions/game_updater).
+import linux_shim  # noqa: F401
+
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -21,7 +26,7 @@ except Exception:
 import sounddevice as sd
 from google import genai
 from google.genai import types
-from ui import BrahmaUI
+from ui import AlmightyUI
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
     should_extract_memory, extract_memory
@@ -54,6 +59,8 @@ from or_client import client as openrouter_client
 from workspace_store import store as workspace_store
 from smart_home.service import SmartHomeService
 from plugin_manager import PluginManager
+from skill_manager import get_skill_manager
+from mcp_client import get_mcp_manager
 
 try:
     from dashboard.server import DashboardServer
@@ -70,7 +77,7 @@ def get_base_dir():
 BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
-STARTUP_LOG     = Path(os.environ.get("LOCALAPPDATA", str(BASE_DIR))) / "BrahmaAI" / "startup.log"
+STARTUP_LOG     = Path(os.environ.get("LOCALAPPDATA", str(BASE_DIR))) / "AlmightyAI" / "startup.log"
 LIVE_MODEL          = "models/gemini-2.5-flash-native-audio-preview-12-2025"
 CHANNELS            = 1
 SEND_SAMPLE_RATE    = 16000
@@ -118,9 +125,9 @@ def _ensure_desktop_shortcut() -> None:
             desktop_dir = Path(os.path.expanduser("~")) / "Desktop"
             
         desktop_dir.mkdir(parents=True, exist_ok=True)
-        shortcut_path = desktop_dir / "Brahma AI - Lite.lnk"
+        shortcut_path = desktop_dir / "Almighty AI.lnk"
         script_path = BASE_DIR / "main.py"
-        icon_path = BASE_DIR / "assets" / "Brahma_Lite_Logo.ico"
+        icon_path = BASE_DIR / "assets" / "Almighty_AI_Logo.ico"
 
         if not icon_path.exists():
             icon_path = None
@@ -151,7 +158,7 @@ def _ensure_desktop_shortcut() -> None:
             f"$Shortcut.Arguments = '{_ps_escape(shortcut_args)}'",
             f"$Shortcut.WorkingDirectory = '{_ps_escape(str(BASE_DIR))}'",
             "$Shortcut.WindowStyle = 7",
-            "$Shortcut.Description = 'Launch Brahma AI - Lite'",
+            "$Shortcut.Description = 'Launch Almighty AI'",
             f"if ('{_ps_escape(icon_value)}') {{ $Shortcut.IconLocation = '{_ps_escape(icon_value)},0' }}",
             "$Shortcut.Save()",
         ])
@@ -174,7 +181,7 @@ def _load_system_prompt() -> str:
         return PROMPT_PATH.read_text(encoding="utf-8")
     except Exception:
         return (
-            "You are Brahma AI - Lite, a calm, direct, and professional AI assistant. "
+            "You are Rex, a calm, direct, and professional AI assistant for Almighty AI. "
             "Be concise, direct, and always use the provided tools to complete tasks. "
             "Never simulate or guess results — always call the appropriate tool. "
             "If the user asks to create, build, launch, or open a website, always use the selected workspace folder."
@@ -230,7 +237,7 @@ def _gemini_text_reply(prompt: str) -> str:
         http_options={"api_version": "v1beta"},
     )
     system_prompt = (
-        "You are Brahma AI - Lite, a concise, helpful desktop assistant. "
+        "You are Rex, a concise, helpful desktop assistant for Almighty AI. "
         "Reply naturally and briefly. Do not mention internal implementation details."
     )
     response = client.models.generate_content(
@@ -315,10 +322,10 @@ def _wakeword_detected(text: str) -> bool:
     if not words:
         return False
     phrases = (
-        "brahma",
-        "hey brahma",
-        "hi brahma",
-        "hello brahma",
+        "almighty",
+        "hey almighty",
+        "hi almighty",
+        "hello almighty",
         "hey",
         "hi",
         "hello",
@@ -326,7 +333,7 @@ def _wakeword_detected(text: str) -> bool:
     compact = " ".join(words)
     if compact in phrases or any(p in compact for p in phrases):
         return True
-    return any(word in {"brahma", "hey", "hi", "hello"} for word in words)
+    return any(word in {"almighty", "hey", "hi", "hello"} for word in words)
 
 
 def _build_task_plan(text: str) -> list[str]:
@@ -390,11 +397,11 @@ def _build_task_plan(text: str) -> list[str]:
 
 _last_memory_input = ""
 
-def _update_memory_async(user_text: str, brahma_text: str) -> None:
+def _update_memory_async(user_text: str, almighty_text: str) -> None:
     global _last_memory_input
 
     user_text   = (user_text   or "").strip()
-    brahma_text = (brahma_text or "").strip()
+    almighty_text = (almighty_text or "").strip()
 
     if len(user_text) < 5 or user_text == _last_memory_input:
         return
@@ -402,9 +409,9 @@ def _update_memory_async(user_text: str, brahma_text: str) -> None:
 
     try:
         api_key = _get_api_key()
-        if not should_extract_memory(user_text, brahma_text, api_key):
+        if not should_extract_memory(user_text, almighty_text, api_key):
             return
-        data = extract_memory(user_text, brahma_text, api_key)
+        data = extract_memory(user_text, almighty_text, api_key)
         if data:
             update_memory(data)
             print(f"[Memory] ✅ {list(data.keys())}")
@@ -771,7 +778,7 @@ TOOL_DECLARATIONS = [
         "name": "presentation_builder",
         "description": (
             "Creates editable PowerPoint presentations (.pptx) from a structured slide outline. "
-            "Brahma automatically infers the best visual style from the topic, searches for a matching online template when available, "
+            "Almighty automatically infers the best visual style from the topic, searches for a matching online template when available, "
             "reuses cached templates, and falls back to the built-in designer if no suitable template is found. "
             "Use when the user asks for a deck, slideshow, presentation, pitch deck, or report slides."
         ),
@@ -782,7 +789,7 @@ TOOL_DECLARATIONS = [
                 "subtitle": {"type": "STRING", "description": "Optional subtitle or audience line"},
                 "theme": {
                     "type": "STRING",
-                    "description": "Optional presentation theme or visual direction such as neon, corporate, luxury, academic, sunset, or creative. If omitted, Brahma infers the best style automatically."
+                    "description": "Optional presentation theme or visual direction such as neon, corporate, luxury, academic, sunset, or creative. If omitted, Almighty infers the best style automatically."
                 },
                 "outline": {
                     "type": "STRING",
@@ -938,11 +945,11 @@ TOOL_DECLARATIONS = [
         }
     },
     {
-        "name": "shutdown_brahma",
+        "name": "shutdown_almighty",
         "description": (
             "Shuts down the assistant completely. "
         "Call this when the user expresses intent to end the conversation, "
-        "close the assistant, say goodbye, or stop Brahma AI. "
+        "close the assistant, say goodbye, or stop Almighty AI. "
         "The user can say this in ANY language."
     ),
     "parameters": {
@@ -983,9 +990,87 @@ TOOL_DECLARATIONS = [
 ]
 
 
-class BrahmaLive:
+def _mcp_tool_declarations() -> list:
+    """Convert connected MCP tools into Gemini function declarations.
 
-    def __init__(self, ui: BrahmaUI, dashboard=None, dashboard_started: bool = False, enable_dashboard: bool = True):
+    Best-effort JSON-Schema -> Gemini-type mapping; unknown types default to
+    STRING. Empty when no MCP server is configured or the SDK is missing.
+    """
+    try:
+        tools = get_mcp_manager().list_tools()
+    except Exception:
+        return []
+    if not tools:
+        return []
+
+    type_map = {"string": "STRING", "number": "NUMBER", "integer": "INTEGER",
+                "boolean": "BOOLEAN", "array": "ARRAY", "object": "OBJECT"}
+    declarations = []
+    for t in tools:
+        schema = t.get("inputSchema") or {}
+        properties = {}
+        for pname, pschema in (schema.get("properties") or {}).items():
+            ptype = type_map.get(str(pschema.get("type", "string")).lower(), "STRING")
+            prop = {"type": ptype}
+            if pschema.get("description"):
+                prop["description"] = pschema["description"]
+            if ptype == "ARRAY" and isinstance(pschema.get("items"), dict):
+                prop["items"] = {"type": type_map.get(
+                    str(pschema["items"].get("type", "string")).lower(), "STRING")}
+            properties[pname] = prop
+        required = [k for k in (schema.get("required") or []) if k in properties]
+        declarations.append({
+            "name": t["name"],
+            "description": t.get("description") or f"MCP tool from {t.get('server', 'MCP')}",
+            "parameters": {"type": "OBJECT", "properties": properties, "required": required},
+        })
+    return declarations
+
+
+def _mcp_list_text() -> str:
+    """Formatted list of connected MCP tools (starts servers on first use)."""
+    tools = get_mcp_manager().list_tools()
+    if not tools:
+        return "No MCP tools available. Add servers to config/mcp_servers.json."
+    return "\n".join(f"- {t['name']}: {t.get('description') or ''}" for t in tools)
+
+
+# Skill tools are only exposed to the live model when at least one skill is
+# installed (see _build_config), so an empty skills/ folder costs the model
+# zero extra tool round-trips.
+SKILL_TOOL_DECLARATIONS = [
+    {
+        "name": "list_skills",
+        "description": (
+            "Lists all installed skills (learned instruction sets) as name + description. "
+            "Call this when a task might match a known skill before executing it."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {},
+        }
+    },
+    {
+        "name": "load_skill",
+        "description": (
+            "Loads the full markdown instructions of an installed skill by name. "
+            "Use list_skills first to find the right name, then load it when the task matches "
+            "and follow its instructions using the other tools."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "name": {"type": "STRING", "description": "Exact skill name from list_skills"}
+            },
+            "required": ["name"]
+        }
+    },
+]
+
+
+class AlmightyLive:
+
+    def __init__(self, ui: AlmightyUI, dashboard=None, dashboard_started: bool = False, enable_dashboard: bool = True):
         self.ui             = ui
         self._smart_home    = SmartHomeService()
         self.session        = None
@@ -1013,6 +1098,11 @@ class BrahmaLive:
         self.ui.on_text_command = self._on_text_command
         self.ui.on_attention_action = self._on_attention_action
         self.ui.on_remote_clicked = self._make_remote_key
+        # On-device wake word (Vosk).  Optional: degrades to the existing
+        # cloud wake-word standby if the model/vosk are unavailable.
+        self._wakeword = None
+        self.ui.on_wakeword_config_changed = self._apply_wakeword_settings
+        self._init_wakeword()
         self._last_activity = time.monotonic()
         self._idle_prompts = [
             "Hey, you there?",
@@ -1026,6 +1116,60 @@ class BrahmaLive:
 
     def _reset_idle_activity(self):
         self._last_activity = time.monotonic()
+
+    def _init_wakeword(self):
+        """Create the on-device 'Hey Rex' listener if vosk + model are available.
+
+        Non-fatal: missing vosk/model just leaves ``self._wakeword`` as None and
+        the app falls back to the existing cloud wake-word standby.
+        """
+        try:
+            from wake_word import WakeWordListener
+
+            model_dir = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "config", "models", "vosk-model-small-en-us-0.15",
+            )
+            self._wakeword = WakeWordListener(
+                model_dir=model_dir,
+                on_trigger=self._on_wakeword_triggered,
+            )
+            self._apply_wakeword_settings()
+        except Exception as exc:
+            self._wakeword = None
+            print(f"[ALMIGHTY] Wake word unavailable: {exc}")
+
+    def _wakeword_settings(self) -> dict:
+        """Read wake-word settings from app_settings (safe on stub UIs)."""
+        try:
+            if hasattr(self.ui, "_load_app_settings"):
+                return self.ui._load_app_settings()
+        except Exception:
+            pass
+        return {}
+
+    def _apply_wakeword_settings(self):
+        """Push settings (enable + sensitivity) to the listener, or disarm it."""
+        w = getattr(self, "_wakeword", None)
+        if w is None:
+            return
+        settings = self._wakeword_settings()
+        w.set_sensitivity(float(settings.get("wake_word_sensitivity", 0.5)))
+        if bool(settings.get("wake_word_enabled", True)):
+            w.set_enabled(True)
+            print("[ALMIGHTY] 🎙 Wake word 'Hey Rex' armed (on-device Vosk)")
+        else:
+            w.set_enabled(False)
+            print("[ALMIGHTY] Wake word disabled in settings")
+
+    def _on_wakeword_triggered(self):
+        """Wake word heard while muted -> unmute the mic + log it."""
+        try:
+            if self.ui.muted:
+                self.ui.set_muted_state(False, wakeword=True)
+                self.ui.write_log("SYS: 'Hey Rex' detected — microphone active.")
+        except Exception as exc:
+            print(f"[ALMIGHTY] wake word trigger error: {exc}")
 
     def _should_announce_idle(self) -> bool:
         if self.ui.muted:
@@ -1056,10 +1200,14 @@ class BrahmaLive:
         if self._dashboard is None:
             self.ui.write_log("ERR: Mobile Connect unavailable. Install fastapi, uvicorn, cryptography, and qrcode[pil].")
             return None
-        key = self._dashboard.new_key()
-        url = self._dashboard.get_url()
-        manual = self._dashboard.get_manual_url()
-        return url, key, f"{url}/auto-login?key={key}", manual
+        url, key, auto, manual, warning = self._dashboard.new_pairing()
+        if warning:
+            print(f"[Dashboard] \u26a0\ufe0f {warning}")
+            try:
+                self.ui.write_log(f"WARN: {warning}")
+            except Exception:
+                pass
+        return url, key, auto, manual, warning
 
     def _on_phone_connected(self):
         try:
@@ -1097,10 +1245,10 @@ class BrahmaLive:
             devices = self._smart_home.list_devices()
             routed_text_home = sd_mgr.route_command(text, devices)
             if routed_text_home != text:
-                print(f"[BRAHMA] Redirection: '{text}' -> '{routed_text_home}'")
+                print(f"[ALMIGHTY] Redirection: '{text}' -> '{routed_text_home}'")
                 text = routed_text_home
         except Exception as e:
-            print(f"[BRAHMA] Redirection error: {e}")
+            print(f"[ALMIGHTY] Redirection error: {e}")
 
         developer_settings = self.ui._load_app_settings() if hasattr(self.ui, "_load_app_settings") else {}
         developer_enabled = bool(developer_settings.get("developer_mode_enabled", False))
@@ -1151,7 +1299,7 @@ class BrahmaLive:
             try:
                 self.ui.update_task_workspace(
                     status="Scanning screen",
-                    output="Brahma is inspecting the screen for what you asked about.",
+                    output="Almighty is inspecting the screen for what you asked about.",
                     percent=40,
                 )
             except Exception:
@@ -1204,7 +1352,7 @@ class BrahmaLive:
                 percent=100,
                 source=source,
             )
-            self.ui.write_log(f"Brahma AI: {detail}")
+            self.ui.write_log(f"Rex: {detail}")
             self.speak(detail)
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
@@ -1313,7 +1461,7 @@ class BrahmaLive:
         if summary:
             self.ui.write_log(f"[Meeting] {summary}")
         if answer:
-            self.ui.write_log(f"Brahma AI: {answer}")
+            self.ui.write_log(f"Rex: {answer}")
 
     def _on_meeting_state(self, state: str):
         if state == "LISTENING":
@@ -1459,7 +1607,7 @@ class BrahmaLive:
                 return self._prompt_message_reply(event)
             if self._attention_matches(lower, ("hear", "read", "what is it", "tell me", "show it", "open it")):
                 preview = read_event_preview(event)
-                self.ui.write_log(f"Brahma AI: {preview}")
+                self.ui.write_log(f"Rex: {preview}")
                 threading.Thread(target=speak_native, args=(preview,), daemon=True).start()
                 with self._attention_lock:
                     self._pending_attention = None
@@ -1509,7 +1657,7 @@ class BrahmaLive:
         if kind == "message":
             if decision == "hear":
                 preview = read_event_preview(event)
-                self.ui.write_log(f"Brahma AI: {preview}")
+                self.ui.write_log(f"Rex: {preview}")
                 threading.Thread(target=speak_native, args=(preview,), daemon=True).start()
             elif decision == "reply":
                 self._prompt_message_reply(event)
@@ -1541,7 +1689,7 @@ class BrahmaLive:
             try:
                 self.ui.update_task_workspace(
                     status="Thinking",
-                    output="Brahma is drafting a direct reply.",
+                    output="Almighty is drafting a direct reply.",
                     percent=35,
                 )
             except Exception:
@@ -1554,7 +1702,7 @@ class BrahmaLive:
                 try:
                     reply = _gemini_text_reply(request_text)
                 except Exception as e:
-                    print(f"[BRAHMA] ⚠️ Gemini fallback failed: {e}")
+                    print(f"[ALMIGHTY] ⚠️ Gemini fallback failed: {e}")
                     if _is_gemini_limit_error(e):
                         self._use_openrouter_first = True
 
@@ -1563,18 +1711,18 @@ class BrahmaLive:
                     reply = openrouter_client.chat(
                         request_text,
                         system=(
-                            "You are Brahma AI - Lite, a concise, helpful desktop assistant. "
+                            "You are Rex, a concise, helpful desktop assistant for Almighty AI. "
                             "Reply naturally and briefly. Do not mention internal implementation details."
                         ),
                     )
                 except Exception as e:
-                    print(f"[BRAHMA] ⚠️ OpenRouter fallback failed: {e}")
+                    print(f"[ALMIGHTY] ⚠️ OpenRouter fallback failed: {e}")
                     if gemini_first and not self._use_openrouter_first and _is_gemini_limit_error(e):
                         self._use_openrouter_first = True
             reply = (reply or "").strip()
             if not reply:
                 reply = "I’m ready, sir."
-            self.ui.write_log(f"Brahma AI: {reply}")
+            self.ui.write_log(f"Rex: {reply}")
             try:
                 self.ui.finish_task_workspace(reply, "Reply delivered.", 100)
             except Exception:
@@ -1583,7 +1731,7 @@ class BrahmaLive:
                 self.ui.set_state("LISTENING")
         except Exception as e:
             msg = f"Fallback reply failed: {e}"
-            print(f"[BRAHMA] ⚠️ {msg}")
+            print(f"[ALMIGHTY] ⚠️ {msg}")
             self.ui.write_log(f"ERR: {msg}")
             try:
                 self.ui.finish_task_workspace(msg, "Reply failed.", 100)
@@ -1616,6 +1764,30 @@ class BrahmaLive:
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"Sir, {tool_name} encountered an error. {short}")
 
+    def _tool_declarations(self) -> list:
+        """Live-chat function declarations; skill + MCP tools only for Pro."""
+        declarations = list(TOOL_DECLARATIONS)
+        try:
+            from config.profile import is_pro
+            if not is_pro():
+                return declarations  # skills + MCP servers are Pro-gated
+            if get_skill_manager().list_skills():
+                declarations.extend(SKILL_TOOL_DECLARATIONS)
+            mcp_decls = _mcp_tool_declarations()
+            if mcp_decls:
+                declarations.append({
+                    "name": "mcp_list",
+                    "description": (
+                        "Lists all tools available from connected MCP servers "
+                        "(name + description). Call before using an MCP tool."
+                    ),
+                    "parameters": {"type": "OBJECT", "properties": {}},
+                })
+                declarations.extend(mcp_decls)
+        except Exception:
+            pass
+        return declarations
+
     def _build_config(self) -> types.LiveConnectConfig:
         from datetime import datetime
 
@@ -1635,8 +1807,28 @@ class BrahmaLive:
         if mem_str:
             parts.append(mem_str)
         parts.append(sys_prompt)
+        try:
+            from config.profile import is_pro
+            if is_pro():
+                skills = get_skill_manager().list_skills()
+                if skills:
+                    catalog = "\n".join(f"- {s['name']}: {s['description']}" for s in skills)
+                    parts.append(
+                        "Installed skills — call list_skills to list them or load_skill "
+                        "(name: string) to read a skill's instructions when the task matches:\n"
+                        + catalog
+                    )
+                mcp_decls = _mcp_tool_declarations()
+                if mcp_decls:
+                    parts.append(
+                        "Connected MCP tools — call them by name like any other tool "
+                        "(or mcp_list to list them):\n"
+                        + ", ".join(d["name"] for d in mcp_decls)
+                    )
+        except Exception:
+            pass
         parts.append(
-            "Wake-word mode: if the microphone is muted, still listen for the words 'Brahma', 'hey', 'hi', and 'hello'. "
+            "Wake-word mode: if the microphone is muted, still listen for the words 'Almighty', 'hey', 'hi', and 'hello'. "
             "When you hear one of these activation cues, keep the session friendly and concise, "
             "and wait for the user's next command."
         )
@@ -1646,7 +1838,7 @@ class BrahmaLive:
             output_audio_transcription={},
             input_audio_transcription={},
             system_instruction="\n".join(parts),
-            tools=[{"function_declarations": TOOL_DECLARATIONS}],
+            tools=[{"function_declarations": self._tool_declarations()}],
             session_resumption=types.SessionResumptionConfig(),
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
@@ -1661,7 +1853,7 @@ class BrahmaLive:
         name = fc.name
         args = dict(fc.args or {})
 
-        print(f"[BRAHMA] 🔧 {name}  {args}")
+        print(f"[ALMIGHTY] 🔧 {name}  {args}")
         self.ui.set_state("THINKING")
         try:
             self.ui.update_task_workspace(
@@ -1694,7 +1886,38 @@ class BrahmaLive:
         result = "Done."
 
         try:
-            if name == "open_app":
+            from config.profile import PRO_LOCKED_MESSAGE, is_pro
+            pro = is_pro()
+            if not pro and name in {"list_skills", "load_skill", "mcp_list"}:
+                result = PRO_LOCKED_MESSAGE
+            elif name == "list_skills":
+                skills = get_skill_manager().list_skills()
+                result = ("\n".join(f"- {s['name']}: {s['description']}" for s in skills)
+                          if skills else "No skills installed.")
+
+            elif name == "load_skill":
+                skill_name = str(args.get("name") or "").strip()
+                if not skill_name:
+                    result = "load_skill requires a 'name' parameter."
+                else:
+                    content = get_skill_manager().load_skill(skill_name)
+                    if content is None:
+                        result = f"Skill '{skill_name}' not found. Use list_skills to see available skills."
+                    else:
+                        if len(content) > 40_000:
+                            content = content[:40_000] + "\n\n[...skill truncated for length...]"
+                        result = content
+
+            elif name == "mcp_list":
+                # MCP discovery/calls can spawn processes and block for up to
+                # CALL_TIMEOUT_S — never block the live-session loop on them.
+                result = await loop.run_in_executor(None, _mcp_list_text)
+
+            elif pro and await loop.run_in_executor(None, lambda: get_mcp_manager().has_tool(name)):
+                result = await loop.run_in_executor(
+                    None, lambda: get_mcp_manager().call_tool(name, args))
+
+            elif name == "open_app":
                 r = await loop.run_in_executor(None, lambda: open_app(parameters=args, response=None, player=self.ui))
                 result = r or f"Opened {args.get('app_name')}."
 
@@ -1807,7 +2030,7 @@ class BrahmaLive:
             elif name == "flight_finder":
                 r = await loop.run_in_executor(None, lambda: flight_finder(parameters=args, player=self.ui))
                 result = r or "Done."
-            elif name == "shutdown_brahma":
+            elif name == "shutdown_almighty":
                 self.ui.write_log("SYS: Shutdown requested.")
                 self.speak("Goodbye, sir.")
 
@@ -1833,7 +2056,7 @@ class BrahmaLive:
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
-        print(f"[BRAHMA] 📤 {name} → {str(result)[:80]}")
+        print(f"[ALMIGHTY] 📤 {name} → {str(result)[:80]}")
 
         return types.FunctionResponse(
             id=fc.id, name=name,
@@ -1884,15 +2107,23 @@ class BrahmaLive:
             await self.session.send_realtime_input(media=msg)
 
     async def _listen_audio(self):
-        print("[BRAHMA] 🎤 Mic started")
+        print("[ALMIGHTY] 🎤 Mic started")
         loop = asyncio.get_event_loop()
 
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
-                brahma_speaking = self._is_speaking
+                almighty_speaking = self._is_speaking
             if self._phone_active:
                 return
-            if not brahma_speaking and (not self.ui.muted or getattr(self.ui, "_wakeword_listening", False)):
+            if almighty_speaking:
+                return
+            wakeword = getattr(self, "_wakeword", None)
+            if self.ui.muted and wakeword is not None and wakeword.enabled:
+                # TRUE privacy mute: audio never leaves the machine; only the
+                # local Vosk detector hears it.  "Hey Rex" re-opens the mic.
+                wakeword.feed(indata.tobytes())
+                return
+            if not self.ui.muted or getattr(self.ui, "_wakeword_listening", False):
                 data = indata.tobytes()
                 loop.call_soon_threadsafe(
                     self.out_queue.put_nowait,
@@ -1900,22 +2131,38 @@ class BrahmaLive:
                 )
 
         try:
-            with sd.InputStream(
+            from linux_shim import configure_audio_devices
+            await asyncio.to_thread(configure_audio_devices)
+        except Exception:
+            pass
+
+        def _open_input():
+            return sd.InputStream(
                 samplerate=SEND_SAMPLE_RATE,
                 channels=CHANNELS,
                 dtype="int16",
                 blocksize=CHUNK_SIZE,
                 callback=callback,
-            ):
-                print("[BRAHMA] 🎤 Mic stream open")
-                while True:
-                    await asyncio.sleep(0.1)
+            )
+
+        try:
+            # Open in a worker thread with a timeout so a flaky device can
+            # never freeze the event loop. If capture is unavailable, degrade
+            # gracefully: the session keeps running (text in, TTS out).
+            stream = await asyncio.wait_for(
+                asyncio.to_thread(_open_input), timeout=6.0
+            )
         except Exception as e:
-            print(f"[BRAHMA] ❌ Mic: {e}")
-            raise
+            print(f"[ALMIGHTY] ❌ Mic: {e}")
+            return
+
+        with stream:
+            print("[ALMIGHTY] 🎤 Mic stream open")
+            while True:
+                await asyncio.sleep(0.1)
 
     async def _receive_audio(self):
-        print("[BRAHMA] 👂 Recv started")
+        print("[ALMIGHTY] 👂 Recv started")
         out_buf, in_buf = [], []
 
         try:
@@ -1960,7 +2207,7 @@ class BrahmaLive:
 
                             full_out = " ".join(out_buf).strip()
                             if full_out:
-                                self.ui.write_log(f"Brahma AI: {full_out}")
+                                self.ui.write_log(f"Rex: {full_out}")
                             out_buf = []
 
                             if full_in and len(full_in) > 5:
@@ -1973,7 +2220,7 @@ class BrahmaLive:
                     if response.tool_call:
                         fn_responses = []
                         for fc in response.tool_call.function_calls:
-                            print(f"[BRAHMA] 📞 {fc.name}")
+                            print(f"[ALMIGHTY] 📞 {fc.name}")
                             fr = await self._execute_tool(fc)
                             fn_responses.append(fr)
                         await self.session.send_tool_response(
@@ -1981,20 +2228,36 @@ class BrahmaLive:
                         )
 
         except Exception as e:
-            print(f"[BRAHMA] ❌ Recv: {e}")
+            print(f"[ALMIGHTY] ❌ Recv: {e}")
             traceback.print_exc()
             raise
 
     async def _play_audio(self):
-        print("[BRAHMA] 🔊 Play started")
+        print("[ALMIGHTY] 🔊 Play started")
         loop = asyncio.get_event_loop()
 
-        stream = sd.RawOutputStream(
-            samplerate=RECEIVE_SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype="int16",
-            blocksize=CHUNK_SIZE,
-        )
+        try:
+            from linux_shim import configure_audio_devices
+            await asyncio.to_thread(configure_audio_devices)
+        except Exception:
+            pass
+
+        def _open_output():
+            return sd.RawOutputStream(
+                samplerate=RECEIVE_SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype="int16",
+                blocksize=CHUNK_SIZE,
+            )
+
+        try:
+            stream = await asyncio.wait_for(
+                asyncio.to_thread(_open_output), timeout=6.0
+            )
+        except Exception as e:
+            print(f"[ALMIGHTY] ❌ Play: {e}")
+            raise
+
         stream.start()
         try:
             while True:
@@ -2002,7 +2265,7 @@ class BrahmaLive:
                 self.set_speaking(True)
                 await asyncio.to_thread(stream.write, chunk)
         except Exception as e:
-            print(f"[BRAHMA] ❌ Play: {e}")
+            print(f"[ALMIGHTY] ❌ Play: {e}")
             raise
         finally:
             self.set_speaking(False)
@@ -2051,7 +2314,7 @@ class BrahmaLive:
 
         while True:
             try:
-                print("[BRAHMA] 🔌 Connecting...")
+                print("[ALMIGHTY] 🔌 Connecting...")
                 self.ui.set_state("THINKING")
                 config = self._build_config()
 
@@ -2064,14 +2327,14 @@ class BrahmaLive:
                         self.audio_in_queue = asyncio.Queue()
                         self.out_queue      = asyncio.Queue(maxsize=10)
 
-                        print("[BRAHMA] ✅ Connected.")
+                        print("[ALMIGHTY] ✅ Connected.")
                         try:
                             self.ui.boot_set_step_status("Connect AI backend", "done")
                             self.ui.boot_set_progress(75, "AI backend connected")
                         except Exception:
                             pass
                         self.ui.set_state("LISTENING")
-                        self.ui.write_log("SYS: Brahma AI online.")
+                        self.ui.write_log("SYS: Almighty AI online.")
 
                         tg.create_task(self._send_realtime())
                         tg.create_task(self._listen_audio())
@@ -2096,7 +2359,7 @@ class BrahmaLive:
                         pass
                     
             except Exception as e:
-                print(f"[BRAHMA] ⚠️ {e}")
+                print(f"[ALMIGHTY] ⚠️ {e}")
                 traceback.print_exc()
                 if _is_gemini_limit_error(e):
                     self._use_openrouter_first = True
@@ -2104,19 +2367,39 @@ class BrahmaLive:
                 self._loop = None
             self.set_speaking(False)
             self.ui.set_state("LISTENING")
-            print("[BRAHMA] 🔄 Reconnecting in 5s...")
+            print("[ALMIGHTY] 🔄 Reconnecting in 5s...")
             await asyncio.sleep(5)
 
 def main():
     _startup_log("main entered")
     _ensure_desktop_shortcut()
-    ui = BrahmaUI(str(BASE_DIR / "assets" / "Brahma_Lite_Logo.png"), show_immediately=True)
+    try:
+        from config.profile import load_license_state
+        _lic = load_license_state()
+        if _lic.tier == "pro":
+            _startup_log(f"license: pro ({_lic.licensee or 'unknown'})")
+        elif _lic.reason:
+            _startup_log(f"license: invalid saved key ({_lic.reason})")
+        else:
+            _startup_log("license: community")
+    except Exception as _lic_exc:
+        _lic = None
+        _startup_log(f"license: check failed ({_lic_exc})")
+    ui = AlmightyUI(str(BASE_DIR / "assets" / "Almighty_AI_Logo.png"), show_immediately=True)
+    if _lic is not None:
+        try:
+            if _lic.tier == "pro":
+                ui.write_log(f"SYS: Almighty Pro active — {_lic.licensee or 'licensed'}.")
+            elif _lic.reason:
+                ui.write_log(f"SYS: Saved license key is invalid: {_lic.reason}")
+        except Exception:
+            pass
     dashboard = None
     dashboard_enabled = DashboardServer is not None and not _is_port_in_use(8000)
     if DashboardServer is not None and not dashboard_enabled:
         _startup_log("dashboard disabled: port 8000 already in use")
         try:
-            ui.write_log("SYS: Mobile Connect is already running in another Brahma instance.")
+            ui.write_log("SYS: Mobile Connect is already running in another Almighty instance.")
         except Exception:
             pass
     if dashboard_enabled:
@@ -2147,11 +2430,33 @@ def main():
     except Exception:
         plugin_manager = None
 
+    # Startup update check: gated by the check_updates_on_startup setting and
+    # the Pro license. Runs in the background — never blocks boot.
+    try:
+        from updater import AutoUpdater
+        from config.profile import is_pro
+        settings = ui._load_app_settings() if hasattr(ui, "_load_app_settings") else {}
+        if settings.get("check_updates_on_startup", True) and is_pro():
+            def _on_update_check(result: dict):
+                try:
+                    if result.get("status") == "update-available":
+                        ui.write_log(f"SYS: Update available — v{result.get('latest')}. Apply it in Settings → System & Connect → Updates.")
+                    elif result.get("status") == "error":
+                        ui.write_log(f"SYS: Update check failed: {result.get('error')}")
+                except Exception:
+                    pass
+            AutoUpdater(BASE_DIR, _startup_log).check_in_background(on_done=_on_update_check)
+            _startup_log("startup update check scheduled")
+        else:
+            _startup_log("startup update check skipped (setting off or Community)")
+    except Exception as _upd_exc:
+        _startup_log(f"startup update check setup failed: {_upd_exc}")
+
     def runner():
         _startup_log("runner waiting api key")
         ui.wait_for_api_key()
         _startup_log("runner api key ready")
-        brahma = BrahmaLive(
+        almighty = AlmightyLive(
             ui,
             dashboard=dashboard,
             dashboard_started=dashboard is not None,
@@ -2159,17 +2464,17 @@ def main():
         )
         try:
             if plugin_manager is not None:
-                brahma.plugin_manager = plugin_manager
-                plugin_manager.register_brahma(brahma)
+                almighty.plugin_manager = plugin_manager
+                plugin_manager.register_almighty(almighty)
                 # allow plugins to run a startup hook
                 try:
-                    plugin_manager.dispatch("on_startup", brahma)
+                    plugin_manager.dispatch("on_startup", almighty)
                 except Exception:
                     pass
         except Exception:
             pass
         try:
-            asyncio.run(brahma.run())
+            asyncio.run(almighty.run())
         except KeyboardInterrupt:
             print("\n🔴 Shutting down...")
 
@@ -2187,8 +2492,12 @@ def main():
             ).start()
         )
     except Exception:
-        ui.show_main()
-        start_runner()
+        # Never double-spawn the runner thread here: start_runner() above
+        # already did. Just restore the window and fire the briefing.
+        try:
+            ui.show_main()
+        except Exception:
+            pass
         threading.Thread(
             target=_speak_daily_briefing,
             args=(ui,),

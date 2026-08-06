@@ -1,6 +1,5 @@
 sounddevice
 google-genai
-google-generativeai
 pillow
 requests
 python-kasa
@@ -35,3 +34,4 @@ qrcode[pil]
 python-multipart
 PyQt6
 edge-tts
+mcp

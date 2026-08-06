@@ -1,5 +1,5 @@
 """
-dashboard/server.py — Brahma Local HTTP Dashboard
+dashboard/server.py — Almighty Local HTTP Dashboard
 
 Plain HTTP on port 8000 (no SSL warnings, no firewall issues).
 Security at the application layer: AES-256-CBC with session-key-derived key.
@@ -44,8 +44,8 @@ MAX_UPLOAD_MB = 500
 def _make_uploads_dir() -> Path:
     """Return (and create) the cross-platform uploads folder."""
     for candidate in [
-        Path.home() / "Downloads" / "Brahma Uploads",
-        Path.home() / "Documents" / "Brahma Uploads",
+        Path.home() / "Downloads" / "Almighty Uploads",
+        Path.home() / "Documents" / "Almighty Uploads",
         BASE_DIR / "uploads",
     ]:
         try:
@@ -79,7 +79,7 @@ _KEY_CHARS = [c for c in (string.ascii_uppercase + string.digits)
               if c not in ('O', 'I', 'L', '0', '1')]
 
 # ── AES-256-CBC ───────────────────────────────────────────────────────────────
-_AES_SALT = b'BRAHMA-DASHBOARD-v1'
+_AES_SALT = b'ALMIGHTY-DASHBOARD-v1'
 
 
 def _derive_key(session_key: str) -> bytes:
@@ -121,8 +121,8 @@ def _ensure_network_access(port: int) -> None:
     if sys.platform == "win32":
         import ctypes, time
 
-        port_rule = f"Brahma Dashboard Port {port}"
-        prog_rule  = "Brahma Dashboard Python"
+        port_rule = f"Almighty Dashboard Port {port}"
+        prog_rule  = "Almighty Dashboard Python"
         py_exe     = sys.executable
 
         def _netsh_rule_exists(name: str) -> bool:
@@ -178,7 +178,7 @@ def _ensure_network_access(port: int) -> None:
             )
 
         bat_body = "\r\n".join(bat_lines) + "\r\n"
-        fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="brahma_fw_")
+        fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="almighty_fw_")
         try:
             os.write(fd, bat_body.encode("mbcs"))   # Windows cmd.exe expects ANSI
             os.close(fd)
@@ -226,7 +226,7 @@ def _ensure_network_access(port: int) -> None:
                 print("[Dashboard] Refresh your phone browser to connect.")
             else:
                 print("[Dashboard] Setup was not allowed.")
-                print("[Dashboard] Phone connections may fail until Brahma is run as Administrator.")
+                print("[Dashboard] Phone connections may fail until Almighty is run as Administrator.")
         except Exception as e:
             print(f"[Dashboard] Firewall setup error: {e}")
         finally:
@@ -334,100 +334,29 @@ _ensure_crypto_js()
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _is_private_ipv4(ip: str) -> bool:
-    try:
-        parts = [int(part) for part in ip.split('.')]
-        if len(parts) != 4:
-            return False
-        a, b, c, d = parts
-        if a == 10:
-            return True
-        if a == 172 and 16 <= b <= 31:
-            return True
-        if a == 192 and b == 168:
-            return True
-        return False
-    except Exception:
-        return False
+from .net_utils import (  # noqa: E402  (after helper imports for clarity)
+    pick_lan_ip,
+    reachable_lan_ip,
+)
 
 
 def _local_ip() -> str:
-    """Return the best LAN-facing IPv4 address, preferring a private network IP."""
-    preferred_private: list[str] = []
-    private_candidates: list[str] = []
-    other_candidates: list[str] = []
-
-    def _add_candidate(ip: str, preferred: bool = False) -> None:
-        if not ip or ip in ('127.0.0.1', '0.0.0.0'):
-            return
-        if ip.startswith('127.') or ip.startswith('169.254.'):
-            return
-        if _is_private_ipv4(ip):
-            if preferred:
-                preferred_private.append(ip)
-            else:
-                private_candidates.append(ip)
-        else:
-            other_candidates.append(ip)
-
-    try:
-        import psutil
-        for addrs in psutil.net_if_addrs().values():
-            for addr in addrs:
-                ip = getattr(addr, 'address', '') or ''
-                if ip and '.' in ip:
-                    _add_candidate(ip)
-    except Exception:
-        pass
-
-    try:
-        host = socket.gethostname()
-        for info in socket.getaddrinfo(host, None, socket.AF_INET):
-            _add_candidate(info[4][0])
-    except Exception:
-        pass
-
-    try:
-        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
-            _add_candidate(ip)
-    except Exception:
-        pass
-
-    try:
-        import subprocess
-        r = _quiet_run(['ipconfig'], capture_output=True, text=True, timeout=8)
-        for ip in re.findall(r'IPv4[^:]*:\s*([0-9]+(?:\.[0-9]+){3})', r.stdout):
-            _add_candidate(ip)
-    except Exception:
-        pass
-
-    for probe in ('8.8.8.8', '1.1.1.1', '192.168.1.1'):
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.settimeout(0.5)
-            s.connect((probe, 80))
-            _add_candidate(s.getsockname()[0], preferred=True)
-            s.close()
-        except Exception:
-            pass
-
-    for ip in preferred_private:
-        if _is_private_ipv4(ip):
-            return ip
-
-    for ip in private_candidates:
-        if _is_private_ipv4(ip):
-            return ip
-
-    for ip in other_candidates:
-        if ip:
-            return ip
-
-    return '127.0.0.1'
+    """Best LAN-facing IPv4 (virtual interfaces excluded) or 127.0.0.1."""
+    return pick_lan_ip()
 
 
 def _read(name: str) -> str:
     return (STATIC_DIR / name).read_text(encoding="utf-8")
+
+
+def _profile_user_name() -> str:
+    """Configured user display name (single source: config.profile)."""
+    try:
+        from config.profile import get_user_name
+
+        return get_user_name()
+    except Exception:
+        return "chuckee"
 
 
 def _ensure_ssl_certs() -> bool:
@@ -448,7 +377,7 @@ def _ensure_ssl_certs() -> bool:
         certs.mkdir(parents=True, exist_ok=True)
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         subject = issuer = x509.Name([
-            x509.NameAttribute(NameOID.COMMON_NAME, "Brahma AI Local Remote"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "Almighty AI Local Remote"),
         ])
         alt_names = [
             x509.DNSName("localhost"),
@@ -520,6 +449,20 @@ class DashboardServer:
         """URL for manual browser entry on the local network."""
         return f"http://{self._ip}:{PORT}"
 
+    def new_pairing(self, expiry_secs: int = 600) -> tuple[str, str, str, str, str]:
+        """(url, key, auto_login_url, manual_url, warning) for the QR overlay.
+
+        Probes candidate LAN IPs on PORT and uses the first reachable one, so
+        the QR never points at a Docker/VPN interface or a dead address. When
+        nothing answers, returns the best candidate plus a non-empty warning
+        the UI can surface instead of a QR that cannot work.
+        """
+        key = self.new_key(expiry_secs)
+        ip, warning = reachable_lan_ip(port=PORT, preferred=self._ip)
+        self._ip = ip
+        url = f"http://{ip}:{PORT}"
+        return url, key, f"{url}/auto-login?key={key}", url, warning
+
     def _aes_key(self, session_key: str) -> bytes:
         if session_key not in self._aes_cache:
             self._aes_cache[session_key] = _derive_key(session_key)
@@ -583,9 +526,12 @@ class DashboardServer:
             # Auth is handled client-side via sessionStorage bearer token.
             # Server-side header auth can't work here because browser navigations
             # don't send custom headers (location.href doesn't carry Authorization).
+            name = _profile_user_name()
             html = (self._app_html
                     .replace("__IP__", self._ip)
-                    .replace("__PORT__", str(PORT)))
+                    .replace("__PORT__", str(PORT))
+                    .replace("__USER_NAME__", name)
+                    .replace("__USER_INITIAL__", (name[:1].upper() if name else "U")))
             return HTMLResponse(html)
 
         @app.post("/login")
@@ -622,7 +568,7 @@ class DashboardServer:
   h2{color:#f87171;margin-bottom:12px}p{color:#5e6a7e;font-size:14px}
 </style></head>
 <body><div><h2>Link Expired</h2>
-<p>Press <strong style="color:#dde3ed">Mobile Connect</strong> in Brahma to get a new QR code.</p>
+<p>Press <strong style="color:#dde3ed">Mobile Connect</strong> in Almighty to get a new QR code.</p>
 </div></body></html>""")
 
             del self._pending_keys[key]
@@ -653,7 +599,7 @@ class DashboardServer:
   localStorage.setItem('jarvis_device_token','{dev_tok}');
   setTimeout(function(){{location.replace('/')}},400);
 </script>
-<p>Connecting to Brahma…</p>
+<p>Connecting to Almighty…</p>
 </body></html>""")
 
         @app.post("/api/device-login")
@@ -889,5 +835,5 @@ class DashboardServer:
         )
 
         print(f"[Dashboard] http://{self._ip}:{PORT}")
-        print("[Dashboard] Press 'Mobile Connect' in Brahma UI to get the QR code.")
+        print("[Dashboard] Press 'Mobile Connect' in Almighty UI to get the QR code.")
         await uvicorn.Server(cfg).serve()
