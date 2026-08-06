@@ -65,6 +65,36 @@ CHUNK_SIZE          = 1024
 LIVE_CONNECT_TIMEOUT = 12
 
 
+def _device_rate() -> int:
+    """Return the output device's native sample rate (e.g. 44100) so we can
+    downsample/upsample around it. Falls back to 44100 on any probe error."""
+    try:
+        import sounddevice as _sd
+        out = _sd.default.device
+        idx = out[1] if isinstance(out, (tuple, list)) else out
+        info = _sd.query_devices(idx, "output")
+        return int(info.get("default_samplerate") or 44100)
+    except Exception:
+        return 44100
+
+
+DEVICE_RATE = _device_rate()
+
+
+def _resample_int16(data: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """Linear-interp resample of int16 PCM to a target rate. Uses numpy."""
+    import numpy as _np
+    if src_rate == dst_rate:
+        return data
+    arr = _np.frombuffer(data, dtype=_np.int16).astype(_np.float32)
+    src_len = arr.shape[0]
+    dst_len = int(round(src_len * dst_rate / src_rate))
+    x_old = _np.linspace(0.0, 1.0, src_len, dtype=_np.float32)
+    x_new = _np.linspace(0.0, 1.0, dst_len, dtype=_np.float32)
+    out = _np.interp(x_new, x_old, arr).astype(_np.int16)
+    return out.tobytes()
+
+
 def _get_api_key() -> str:
     with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
         return json.load(f)["gemini_api_key"]
@@ -1338,6 +1368,8 @@ class RexLive:
                 return
             if not rex_speaking and (not self.ui.muted or getattr(self.ui, "_wakeword_listening", False)):
                 data = indata.tobytes()
+                if DEVICE_RATE != SEND_SAMPLE_RATE:
+                    data = _resample_int16(data, DEVICE_RATE, SEND_SAMPLE_RATE)
                 loop.call_soon_threadsafe(
                     self.out_queue.put_nowait,
                     {"data": data, "mime_type": "audio/pcm"}
@@ -1345,7 +1377,7 @@ class RexLive:
 
         try:
             with sd.InputStream(
-                samplerate=SEND_SAMPLE_RATE,
+                samplerate=DEVICE_RATE,
                 channels=CHANNELS,
                 dtype="int16",
                 blocksize=CHUNK_SIZE,
@@ -1434,7 +1466,7 @@ class RexLive:
         loop = asyncio.get_event_loop()
 
         stream = sd.RawOutputStream(
-            samplerate=RECEIVE_SAMPLE_RATE,
+            samplerate=DEVICE_RATE,
             channels=CHANNELS,
             dtype="int16",
             blocksize=CHUNK_SIZE,
@@ -1444,6 +1476,8 @@ class RexLive:
             while True:
                 chunk = await self.audio_in_queue.get()
                 self.set_speaking(True)
+                if DEVICE_RATE != RECEIVE_SAMPLE_RATE:
+                    chunk = _resample_int16(chunk, RECEIVE_SAMPLE_RATE, DEVICE_RATE)
                 await asyncio.to_thread(stream.write, chunk)
         except Exception as e:
             print(f"[REX] ❌ Play: {e}")
