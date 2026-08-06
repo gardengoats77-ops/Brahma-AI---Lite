@@ -387,7 +387,11 @@ def _is_private_ipv4(ip: str) -> bool:
 
 
 def _local_ip() -> str:
-    """Return the best LAN-facing IPv4 address, preferring a private network IP."""
+    """Return the best LAN-facing IPv4 address, preferring a private network IP.
+    Uses socket UDP probe (works on Linux/macOS/Windows) as primary method.
+    Falls back to gethostbyname_ex and Windows ipconfig only if needed.
+    """
+    import platform
     preferred_private: list[str] = []
     private_candidates: list[str] = []
     other_candidates: list[str] = []
@@ -405,64 +409,53 @@ def _local_ip() -> str:
         else:
             other_candidates.append(ip)
 
-    try:
-        import psutil
-        for addrs in psutil.net_if_addrs().values():
-            for addr in addrs:
-                ip = getattr(addr, 'address', '') or ''
-                if ip and '.' in ip:
-                    _add_candidate(ip)
-    except Exception as _e:
-
-        log_error(_e, context="dashboard.server", severity="error")
-
-    try:
-        host = socket.gethostname()
-        for info in socket.getaddrinfo(host, None, socket.AF_INET):
-            _add_candidate(info[4][0])
-    except Exception as _e:
-
-        log_error(_e, context="dashboard.server", severity="error")
-
-    try:
-        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
-            _add_candidate(ip)
-    except Exception as _e:
-
-        log_error(_e, context="dashboard.server", severity="error")
-
-    try:
-        import subprocess
-        r = _quiet_run(['ipconfig'], capture_output=True, text=True, timeout=8)
-        for ip in re.findall(r'IPv4[^:]*:\s*([0-9]+(?:\.[0-9]+){3})', r.stdout):
-            _add_candidate(ip)
-    except Exception as _e:
-
-        log_error(_e, context="dashboard.server", severity="error")
-
-    for probe in ('8.8.8.8', '1.1.1.1', '192.168.1.1'):
+    # Primary: UDP socket probe to public DNS (works on Linux/macOS/Windows)
+    for probe in ('8.8.8.8', '1.1.1.1', '1.1.1.2'):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.settimeout(0.5)
             s.connect((probe, 80))
             _add_candidate(s.getsockname()[0], preferred=True)
             s.close()
-        except Exception as _e:
+        except Exception:
+            pass
 
-            log_error(_e, context="dashboard.server", severity="error")
+    # Secondary: gethostbyname_ex (may return multiple IPs)
+    try:
+        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
+            _add_candidate(ip)
+    except Exception:
+        pass
+
+    # Tertiary (Linux): ip route get 8.8.8.8
+    try:
+        import subprocess
+        r = subprocess.run(['ip', 'route', 'get', '8.8.8.8'], capture_output=True, text=True, timeout=3)
+        if r.returncode == 0:
+            for m in re.finditer(r'src\s+([0-9.]+)', r.stdout):
+                _add_candidate(m.group(1), preferred=True)
+    except Exception:
+        pass
+
+    # Fallback (Windows only): ipconfig
+    if platform.system() == 'Windows':
+        try:
+            import subprocess
+            r = _quiet_run(['ipconfig'], capture_output=True, text=True, timeout=8)
+            for ip in re.findall(r'IPv4[^:]*:\\s*([0-9]+(?:\\.[0-9]+){3})', r.stdout):
+                _add_candidate(ip)
+        except Exception:
+            pass
 
     for ip in preferred_private:
         if _is_private_ipv4(ip):
             return ip
-
     for ip in private_candidates:
         if _is_private_ipv4(ip):
             return ip
-
     for ip in other_candidates:
         if ip:
             return ip
-
     return '127.0.0.1'
 
 
