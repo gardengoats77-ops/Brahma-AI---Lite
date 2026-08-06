@@ -3,6 +3,8 @@
 import webbrowser
 from urllib.parse import quote_plus
 
+from actions.daily_briefing import fetch_weather_info
+
 
 def weather_action(
     parameters: dict,
@@ -11,52 +13,48 @@ def weather_action(
 ):
     """
     Weather report action.
-    Opens a Google weather search and gives a short spoken confirmation.
+    Fetches live weather from wttr.in and speaks a real summary.
+    Opens a Google weather search only as a degraded fallback when
+    the live fetch fails.
     """
 
     city = parameters.get("city")
-    time = parameters.get("time")
     if not city or not isinstance(city, str):
         msg = "Sir, the city is missing for the weather report."
         _speak_and_log(msg, player)
         return msg
-
     city = city.strip()
 
-    if not time or not isinstance(time, str):
-        time = "today"
-    else:
-        time = time.strip()
+    report = fetch_weather_info(city)
+    if report:
+        _speak_and_log(report, player)
+        if session_memory:
+            try:
+                session_memory.set_last_search(
+                    query=f"weather in {city}",
+                    response=report
+                )
+            except Exception:
+                pass
+        return report
 
-    search_query = f"weather in {city} {time}"
-    encoded_query = quote_plus(search_query)
-    url = f"https://www.google.com/search?q={encoded_query}"
-
+    # Live fetch failed — degraded fallback: open the live page
+    url = f"https://www.google.com/search?q={quote_plus(f'weather in {city}')}"
     try:
         webbrowser.open(url)
     except Exception:
-        msg = f"Sir, I couldn't open the browser for the weather report."
+        msg = f"Sir, I couldn't fetch live weather for {city} or open the browser."
         _speak_and_log(msg, player)
         return msg
 
-    msg = f"Showing the weather for {city}, {time}, sir."
+    msg = f"I couldn't fetch live data, so I opened the weather page for {city}, sir."
     _speak_and_log(msg, player)
-
-    if session_memory:
-        try:
-            session_memory.set_last_search(
-                query=search_query,
-                response=msg
-            )
-        except Exception:
-            pass  
-
     return msg
 
 
 def _speak_and_log(message: str, player=None):
     if player:
         try:
-            player.write_log(f"Brahma AI: {message}")
+            player.write_log(f"Rex: {message}")
         except Exception:
             pass

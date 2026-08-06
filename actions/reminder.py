@@ -3,7 +3,39 @@
 import subprocess
 import os
 import sys
+import threading
+import time
 from datetime import datetime
+
+
+def _schedule_linux_reminder(target_dt, message: str, player=None, date_str: str = "", time_str: str = "") -> str:
+    """Schedule an in-app reminder on Linux/macOS via a daemon thread.
+
+    Fires a real desktop notification (``notify.py``) at the target time
+    while the app is running.  Windows keeps its Task Scheduler + ``.pyw``
+    path (see below); this is the portable replacement for the win10toast
+    stub on non-Windows platforms.
+    """
+    delay = (target_dt - datetime.now()).total_seconds()
+
+    def _fire():
+        if delay > 0:
+            time.sleep(delay)
+        try:
+            import notify
+
+            ok = notify.notify("Almighty AI Reminder", message, timeout_ms=15000)
+            if not ok:
+                print("[Reminder] desktop notifications unavailable; reminder logged only.")
+        except Exception as exc:
+            print(f"[Reminder] notification failed: {exc}")
+        if player:
+            player.write_log(f"[reminder] fired: {message}")
+
+    threading.Thread(target=_fire, name="AlmightyReminder", daemon=True).start()
+    if player:
+        player.write_log(f"[reminder] set for {date_str} {time_str}")
+    return f"Reminder set for {target_dt.strftime('%B %d at %I:%M %p')}."
 
 
 def reminder(
@@ -40,6 +72,12 @@ def reminder(
         task_name    = f"MARKReminder_{target_dt.strftime('%Y%m%d_%H%M')}"
         safe_message = message.replace('"', '').replace("'", "").strip()[:200]
 
+        if os.name != "nt":
+            return _schedule_linux_reminder(
+                target_dt, safe_message, player=player,
+                date_str=date_str, time_str=time_str,
+            )
+
         python_exe = sys.executable
         if python_exe.lower().endswith("python.exe"):
             pythonw = python_exe.replace("python.exe", "pythonw.exe")
@@ -73,8 +111,8 @@ try:
     )
 except Exception:
     try:
-        import subprocess
-        subprocess.run(["msg", "*", "/TIME:30", "{safe_message}"], shell=True)
+        from _subprocess_utils import safe_run
+        safe_run(["msg", "*", "/TIME:30", "{safe_message}"], timeout=10)
     except Exception:
         pass
 
@@ -125,9 +163,10 @@ except Exception:
         with open(xml_path, "w", encoding="utf-16") as f:
             f.write(xml_content)
 
-        result = subprocess.run(
-            f'schtasks /Create /TN "{task_name}" /XML "{xml_path}" /F',
-            shell=True, capture_output=True, text=True
+        from _subprocess_utils import safe_run
+        result = safe_run(
+            ["schtasks", "/Create", "/TN", task_name, "/XML", xml_path, "/F"],
+            timeout=15,
         )
 
         try:

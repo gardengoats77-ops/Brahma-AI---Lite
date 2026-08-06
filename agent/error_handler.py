@@ -1,18 +1,6 @@
 import json
 import re
-import sys
-from pathlib import Path
 from enum import Enum
-
-
-def get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
-
-BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 
 
 class ErrorDecision(Enum):
@@ -22,7 +10,7 @@ class ErrorDecision(Enum):
     ABORT       = "abort"    
 
 
-ERROR_ANALYST_PROMPT = """You are the error recovery module of Brahma AI - Lite AI assistant.
+ERROR_ANALYST_PROMPT = """You are the error recovery module of Almighty AI AI assistant.
 
 A task step has failed. Analyze the error and decide what to do.
 
@@ -49,11 +37,6 @@ Return ONLY valid JSON:
 """
 
 
-def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
-
-
 def analyze_error(
     step: dict,
     error: str,
@@ -78,8 +61,6 @@ def analyze_error(
             "user_message": str
         }
     """
-    import google.generativeai as genai
-
     if attempt >= max_attempts:
         print(f"[ErrorHandler] ⚠️ Max attempts reached for step {step.get('step')} — forcing replan")
         return {
@@ -90,11 +71,8 @@ def analyze_error(
             "user_message":  "Trying a different approach, sir."
         }
 
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash-lite",
-        system_instruction=ERROR_ANALYST_PROMPT
-    )
+    from actions._llm import gemini
+    model = gemini("gemini-2.5-flash-lite", system_instruction=ERROR_ANALYST_PROMPT)
 
     prompt = f"""Failed step:
 Tool: {step.get('tool')}
@@ -148,10 +126,8 @@ def generate_fix(step: dict, error: str, fix_suggestion: str) -> dict:
 
     Returns a modified step dict.
     """
-    import google.generativeai as genai
-
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(model_name="gemini-2.0-flash")
+    from actions._llm import gemini
+    model = gemini("gemini-3.5-flash")
 
     prompt = f"""A task step failed. Generate a replacement step.
 

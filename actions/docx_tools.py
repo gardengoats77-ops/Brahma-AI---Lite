@@ -1,5 +1,5 @@
 """
-docx_tools.py - Brahma AI Word / DOCX support
+docx_tools.py - Almighty AI Word / DOCX support
 
 Provides dedicated creation, editing, extraction, summarization, and opening
 workflows for editable Word documents.
@@ -15,7 +15,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-PROJECT_NAME = "Brahma AI - Lite"
+from config.profile import get_user_name
+
+PROJECT_NAME = "Almighty AI"
 DEFAULT_OUTPUT_DIR = Path.home() / "Downloads"
 
 
@@ -58,17 +60,9 @@ def _open_file(path: Path) -> None:
         pass
 
 
-def _get_api_key() -> str:
-    config_path = Path(__file__).resolve().parent.parent / "config" / "api_keys.json"
-    with open(config_path, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
-
-
 def _gemini_client():
-    import google.generativeai as genai
-
-    genai.configure(api_key=_get_api_key())
-    return genai.GenerativeModel("gemini-2.5-flash")
+    from actions._llm import gemini
+    return gemini("gemini-2.5-flash")
 
 
 def _import_docx():
@@ -142,7 +136,7 @@ def _set_document_defaults(doc):
 def _set_core_props(doc, title: str, author: str | None = None, subject: str | None = None):
     props = doc.core_properties
     props.title = title or PROJECT_NAME
-    props.author = author or "Suryaansh Tiwari"
+    props.author = author or get_user_name()
     props.subject = subject or "Word document"
     props.company = PROJECT_NAME
     props.created = datetime.now()
@@ -273,7 +267,7 @@ def _create_letter(doc, params):
     date_value = (params.get("date") or datetime.now().strftime("%B %d, %Y")).strip()
     salutation = (params.get("salutation") or (f"Dear {recipient}," if recipient else "Dear Sir or Madam,")).strip()
     closing = (params.get("closing") or "Sincerely,").strip()
-    signature = (params.get("signature") or params.get("author") or "Suryaansh Tiwari").strip()
+    signature = (params.get("signature") or params.get("author") or get_user_name()).strip()
     body = params.get("body") or params.get("content") or ""
     paragraphs = _normalize_list(params.get("paragraphs")) or [p.strip() for p in re.split(r"\n\s*\n", str(body)) if p.strip()]
 
@@ -350,11 +344,11 @@ def _create_generic(doc, params):
 
 def _docx_result_path(source_path: Path | None, action: str, output_path: str | None, title: str) -> Path:
     if output_path:
-        fallback = title or (source_path.stem if source_path else "Brahma_AI_Document")
+        fallback = title or (source_path.stem if source_path else "Almighty_AI_Document")
         return _resolve_output_path(output_path, title=fallback, ext=".docx", fallback_name=fallback)
     if source_path:
         return source_path.with_name(f"{source_path.stem}_{action}.docx")
-    return _resolve_output_path(None, title=title, ext=".docx", fallback_name="Brahma_AI_Document")
+    return _resolve_output_path(None, title=title, ext=".docx", fallback_name="Almighty_AI_Document")
 
 
 def _load_doc(path: Path):
@@ -367,7 +361,7 @@ def word_document(parameters: dict, player=None, speak=None) -> str:
     action = (params.get("action") or "create").lower().strip()
     file_path_str = (params.get("file_path") or "").strip()
     output_path_str = (params.get("output_path") or "").strip() or None
-    title = (params.get("title") or params.get("subject") or "Brahma AI Document").strip()
+    title = (params.get("title") or params.get("subject") or "Almighty AI Document").strip()
     doc_type = (params.get("doc_type") or params.get("template") or "").lower().strip()
 
     source_path = Path(file_path_str) if file_path_str else None

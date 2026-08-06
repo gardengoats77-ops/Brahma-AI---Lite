@@ -5,27 +5,36 @@ import json
 import time
 import subprocess
 import threading
-import winreg
 from pathlib import Path
 from datetime import datetime
 
+# `winreg` is Windows-only. Guard the import so this module still loads on
+# Linux/macOS; registry lookups then degrade to the path-based fallbacks.
+# (Never stub winreg in sys.modules — the stdlib mimetypes probes it to
+# detect Windows and would crash on a fake module.)
+try:
+    import winreg
+except ImportError:
+    winreg = None
+
 
 def _find_steam_path() -> Path | None:
-    registry_keys = [
-        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam"),
-        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam"),
-        (winreg.HKEY_CURRENT_USER,  r"SOFTWARE\Valve\Steam"),
-    ]
-    for hive, key_path in registry_keys:
-        try:
-            key = winreg.OpenKey(hive, key_path)
-            val, _ = winreg.QueryValueEx(key, "InstallPath")
-            winreg.CloseKey(key)
-            p = Path(val)
-            if p.exists() and (p / "steam.exe").exists():
-                return p
-        except Exception:
-            continue
+    if winreg is not None:
+        registry_keys = [
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam"),
+            (winreg.HKEY_CURRENT_USER,  r"SOFTWARE\Valve\Steam"),
+        ]
+        for hive, key_path in registry_keys:
+            try:
+                key = winreg.OpenKey(hive, key_path)
+                val, _ = winreg.QueryValueEx(key, "InstallPath")
+                winreg.CloseKey(key)
+                p = Path(val)
+                if p.exists() and (p / "steam.exe").exists():
+                    return p
+            except Exception:
+                continue
     for p in [
         Path(os.environ.get("ProgramFiles(x86)", "")) / "Steam",
         Path(os.environ.get("ProgramFiles", "")) / "Steam",
@@ -37,21 +46,22 @@ def _find_steam_path() -> Path | None:
 
 
 def _find_epic_path() -> Path | None:
-    registry_keys = [
-        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\EpicGames\EpicGamesLauncher"),
-        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\EpicGames\EpicGamesLauncher"),
-        (winreg.HKEY_CURRENT_USER,  r"SOFTWARE\EpicGames\EpicGamesLauncher"),
-    ]
-    for hive, key_path in registry_keys:
-        try:
-            key = winreg.OpenKey(hive, key_path)
-            val, _ = winreg.QueryValueEx(key, "AppDataPath")
-            winreg.CloseKey(key)
-            exe = Path(val) / "Binaries" / "Win64" / "EpicGamesLauncher.exe"
-            if exe.exists():
-                return exe.parent
-        except Exception:
-            continue
+    if winreg is not None:
+        registry_keys = [
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\EpicGames\EpicGamesLauncher"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\EpicGames\EpicGamesLauncher"),
+            (winreg.HKEY_CURRENT_USER,  r"SOFTWARE\EpicGames\EpicGamesLauncher"),
+        ]
+        for hive, key_path in registry_keys:
+            try:
+                key = winreg.OpenKey(hive, key_path)
+                val, _ = winreg.QueryValueEx(key, "AppDataPath")
+                winreg.CloseKey(key)
+                exe = Path(val) / "Binaries" / "Win64" / "EpicGamesLauncher.exe"
+                if exe.exists():
+                    return exe.parent
+            except Exception:
+                continue
     for p in [
         Path(os.environ.get("ProgramFiles(x86)", "")) / "Epic Games" / "Launcher" / "Portal" / "Binaries" / "Win64",
         Path(os.environ.get("ProgramFiles", "")) / "Epic Games" / "Launcher" / "Portal" / "Binaries" / "Win64",
@@ -684,7 +694,7 @@ def _update_epic_games(epic_path: Path, game_name: str = None) -> str:
 
 
 def _schedule_daily_update(hour: int = 3, minute: int = 0) -> str:
-    task_name   = "BrahmaAI_GameUpdater"
+    task_name   = "AlmightyAI_GameUpdater"
     script_path = Path(__file__).resolve()
     subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"], capture_output=True)
     for extra in (["/RL", "HIGHEST", "/RU", "SYSTEM"], []):
@@ -698,13 +708,13 @@ def _schedule_daily_update(hour: int = 3, minute: int = 0) -> str:
 
 
 def _cancel_scheduled_update() -> str:
-    result = subprocess.run(["schtasks", "/Delete", "/TN", "BrahmaAI_GameUpdater", "/F"],
+    result = subprocess.run(["schtasks", "/Delete", "/TN", "AlmightyAI_GameUpdater", "/F"],
                             capture_output=True, text=True)
     return "Scheduled update cancelled." if result.returncode == 0 else "No scheduled update found."
 
 
 def _get_schedule_status() -> str:
-    result = subprocess.run(["schtasks", "/Query", "/TN", "BrahmaAI_GameUpdater", "/FO", "LIST"],
+    result = subprocess.run(["schtasks", "/Query", "/TN", "AlmightyAI_GameUpdater", "/FO", "LIST"],
                             capture_output=True, text=True)
     if result.returncode != 0:
         return "No scheduled game update found."

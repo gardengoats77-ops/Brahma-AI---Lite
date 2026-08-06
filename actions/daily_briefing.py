@@ -7,24 +7,25 @@ import random
 import shutil
 import psutil
 import urllib.request
+import urllib.parse
 import json
 from pathlib import Path
 from datetime import datetime
 
-# Fallback values
-DEFAULT_CITY = "Kalyan"
+from config.profile import DEFAULT_CITY, get_city, get_user_name
 
 def get_time_based_greeting() -> str:
-    """Returns a time-based greeting for Suryaansh."""
+    """Returns a time-based greeting for the user."""
+    name = get_user_name()
     hour = datetime.now().hour
     if 5 <= hour < 12:
-        greeting = "Good morning, Suryaansh."
+        greeting = f"Good morning, {name}."
     elif 12 <= hour < 17:
-        greeting = "Good afternoon, Suryaansh."
+        greeting = f"Good afternoon, {name}."
     elif 17 <= hour < 22:
-        greeting = "Good evening, Suryaansh."
+        greeting = f"Good evening, {name}."
     else:
-        greeting = "Welcome back, Suryaansh."
+        greeting = f"Welcome back, {name}."
         
     random_suffixes = [
         "Ready to help.",
@@ -34,45 +35,64 @@ def get_time_based_greeting() -> str:
     ]
     return f"{greeting} {random.choice(random_suffixes)}"
 
-def fetch_weather_info(city: str = DEFAULT_CITY) -> str:
-    """Fetches real-time weather from wttr.in in JSON format."""
+# In-process TTL cache: wttr.in refreshes ~every 15 min, so 10 min is safe
+# and keeps repeated weather questions (briefing + on-demand) off the network.
+_WEATHER_CACHE: dict[str, tuple[float, dict]] = {}
+_CACHE_TTL_S = 600
+
+
+def _fetch_wttr_json(city: str) -> dict | None:
+    """Raw wttr.in j1 fetch. Returns None on any failure (not cached)."""
     try:
-        url = f"https://wttr.in/{city}?format=j1"
+        url = f"https://wttr.in/{urllib.parse.quote(city)}?format=j1"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=3) as response:
-            data = json.loads(response.read().decode('utf-8'))
-            
-            # Parse current condition
-            current = data.get("current_condition", [{}])[0]
-            temp = current.get("temp_C", "unknown")
-            desc = current.get("weatherDesc", [{}])[0].get("value", "").lower()
-            
-            # Find max chance of rain in today's weather
-            chance_of_rain = None
-            weather_days = data.get("weather", [])
-            if weather_days:
-                today_weather = weather_days[0]
-                hourly = today_weather.get("hourly", [])
-                chances = []
-                for hour in hourly:
-                    chance = hour.get("chanceofrain")
-                    if chance is not None:
-                        try:
-                            chances.append(int(chance))
-                        except ValueError:
-                            pass
-                if chances:
-                    chance_of_rain = max(chances)
-            
-            rain_str = ""
-            if chance_of_rain is not None and chance_of_rain > 0:
-                rain_str = f" with a {chance_of_rain} percent chance of rain"
-                
-            weather_desc_str = f" and {desc}" if desc else ""
-            return f"Today's weather in {city} is {temp} degrees{weather_desc_str}{rain_str}."
+            return json.loads(response.read().decode('utf-8'))
     except Exception as e:
         print(f"[DailyBriefing] Weather fetch failed: {e}")
-        return f"Today's weather in {city} is mild with clear skies."
+        return None
+
+
+def fetch_weather_info(city: str | None = None) -> str | None:
+    """Real-time weather summary from wttr.in (cached per city for _CACHE_TTL_S).
+
+    Returns None if the fetch fails — callers degrade honestly.
+    """
+    city = (city or get_city() or DEFAULT_CITY).strip()
+    key = city.lower()
+    now = time.monotonic()
+    hit = _WEATHER_CACHE.get(key)
+    if hit and now - hit[0] < _CACHE_TTL_S:
+        data = hit[1]
+    else:
+        data = _fetch_wttr_json(city)
+        if data is not None:
+            if len(_WEATHER_CACHE) > 64:
+                _WEATHER_CACHE.clear()  # keep the dict bounded; stale keys re-fetch anyway
+            _WEATHER_CACHE[key] = (now, data)
+    if data is None:
+        return None
+
+    current = data.get("current_condition", [{}])[0]
+    temp = current.get("temp_C", "unknown")
+    desc = current.get("weatherDesc", [{}])[0].get("value", "").lower().strip()
+
+    # Max chance of rain across today's hourly forecast
+    weather_days = data.get("weather", [])
+    hourly = weather_days[0].get("hourly", []) if weather_days else []
+    chances = []
+    for hour in hourly:
+        chance = hour.get("chanceofrain")
+        if chance is not None:
+            try:
+                chances.append(int(chance))
+            except ValueError:
+                pass
+    chance_of_rain = max(chances) if chances else None
+
+    rain_str = f" with a {chance_of_rain} percent chance of rain" if chance_of_rain and chance_of_rain > 0 else ""
+    weather_desc_str = f" and {desc}" if desc else ""
+    return f"Today's weather in {city} is {temp} degrees{weather_desc_str}{rain_str}."
 
 def get_system_status_info() -> tuple[str, dict]:
     """Collects system status metrics from the OS."""
@@ -158,7 +178,7 @@ def get_workspace_summary_info() -> tuple[str, dict]:
     state["screenshots_count"] = screenshots_count
         
     # Recent workspace project
-    projects_dir = Path.home() / "Desktop" / "BrahmaProjects"
+    projects_dir = Path.home() / "Desktop" / "AlmightyProjects"
     recent_project_name = None
     recent_project_time = 0
     if projects_dir.exists():
@@ -211,7 +231,7 @@ def compile_daily_briefing(settings: dict) -> str:
     if settings.get("daily_briefing_voice_greeting", True):
         briefing_sections.append(get_time_based_greeting())
     else:
-        briefing_sections.append("Welcome back, Suryaansh.")
+        briefing_sections.append(f"Welcome back, {get_user_name()}.")
         
     # Collect weather and system status and workspace status
     system_state = {}
@@ -219,7 +239,9 @@ def compile_daily_briefing(settings: dict) -> str:
     
     # 2. Weather
     if settings.get("daily_briefing_include_weather", True):
-        briefing_sections.append(fetch_weather_info())
+        weather = fetch_weather_info()
+        if weather:
+            briefing_sections.append(weather)
         
     # 3. System Status
     if settings.get("daily_briefing_include_system_status", True):

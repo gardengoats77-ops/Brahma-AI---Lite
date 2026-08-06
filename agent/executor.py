@@ -12,23 +12,7 @@ from agent.planner       import create_plan, replan
 from agent.error_handler import analyze_error, generate_fix, ErrorDecision
 
 
-def get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
-
-BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
-
-
-def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
-
 def _run_generated_code(description: str, speak: Callable | None = None) -> str:
-    import google.generativeai as genai
-
     if speak:
         speak("Writing custom code for this task, sir.")
 
@@ -46,9 +30,9 @@ def _run_generated_code(description: str, speak: Callable | None = None) -> str:
         except Exception:
             pass
 
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
+    from actions._llm import gemini
+    model = gemini(
+        "gemini-2.5-flash",
         system_instruction=(
             "You are an expert Python developer. "
             "Write clean, complete, working Python code. "
@@ -128,9 +112,8 @@ def _inject_context(params: dict, tool: str, step_results: dict, goal: str = "")
 
     return params
 def _detect_language(text: str) -> str:
-    import google.generativeai as genai
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel("gemini-2.5-flash-lite")
+    from actions._llm import gemini
+    model = gemini("gemini-2.5-flash-lite")
     try:
         response = model.generate_content(
             f"What language is this text written in? "
@@ -146,9 +129,8 @@ def _translate_to_goal_language(content: str, goal: str) -> str:
     if not goal:
         return content
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=_get_api_key())
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        from actions._llm import gemini
+        model = gemini("gemini-2.5-flash")
 
         target_lang = _detect_language(goal)
         print(f"[Executor] 🌐 Translating to: {target_lang}")
@@ -171,7 +153,62 @@ def _translate_to_goal_language(content: str, goal: str) -> str:
         print(f"[Executor] ⚠️ Translation failed: {e}")
         return content
 
+def _pro_gated() -> bool:
+    """Skills and MCP servers are Pro features (LICENSE §3 product gate)."""
+    try:
+        from config.profile import is_pro
+        return not is_pro()
+    except Exception:
+        return False
+
+
+def _pro_message() -> str:
+    """Shared lock message for Pro-gated tools."""
+    try:
+        from config.profile import PRO_LOCKED_MESSAGE
+        return PRO_LOCKED_MESSAGE
+    except Exception:
+        return "This feature requires Almighty Pro."
+
+
 def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
+
+    if tool == "list_skills":
+        if _pro_gated():
+            return _pro_message()
+        from skill_manager import get_skill_manager
+        skills = get_skill_manager().list_skills()
+        if not skills:
+            return "No skills installed."
+        return "Available skills:\n" + "\n".join(
+            f"- {s['name']}: {s['description']}" for s in skills
+        )
+
+    if tool == "mcp_list":
+        if _pro_gated():
+            return _pro_message()
+        from mcp_client import get_mcp_manager
+        tools = get_mcp_manager().list_tools()
+        if not tools:
+            return "No MCP tools available. Add servers to config/mcp_servers.json."
+        return "Available MCP tools:\n" + "\n".join(
+            f"- {t['name']}: {t.get('description') or ''}" for t in tools
+        )
+
+    elif tool == "load_skill":
+        if _pro_gated():
+            return _pro_message()
+        from skill_manager import get_skill_manager
+        name = str(parameters.get("name") or "").strip()
+        if not name:
+            raise ValueError("load_skill requires a 'name' parameter.")
+        content = get_skill_manager().load_skill(name)
+        if content is None:
+            return f"Skill '{name}' not found. Use list_skills to see available skills."
+        # Keep the tool result prompt-safe for large skills.
+        if len(content) > 40_000:
+            content = content[:40_000] + "\n\n[...skill truncated for length...]"
+        return content
 
     if tool == "open_app":
         from actions.open_app import open_app
@@ -248,6 +285,16 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
         from actions.flight_finder import flight_finder
         return flight_finder(parameters=parameters, player=None, speak=speak) or "Done."
     else:
+        # Route to connected MCP servers before declaring the tool unknown.
+        try:
+            from mcp_client import get_mcp_manager
+            if not _pro_gated() and get_mcp_manager().has_tool(tool):
+                return get_mcp_manager().call_tool(tool, parameters) or "Done."
+        except KeyError:
+            pass  # tool not on any server after all -> fall through to unknown
+        except Exception as exc:
+            print(f"[Executor] ⚠️ MCP tool '{tool}' failed: {exc}")
+            raise
         print(f"[Executor] ⚠️ Unknown tool '{tool}' — no developer fallback is configured")
         return f"Unknown action: {tool}"
 
@@ -382,9 +429,8 @@ class AgentExecutor:
     def _summarize(self, goal: str, completed_steps: list, speak: Callable | None) -> str:
         fallback = f"All done, sir. Completed {len(completed_steps)} steps for: {goal[:60]}."
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=_get_api_key())
-            model     = genai.GenerativeModel(model_name="gemini-2.5-flash-lite")
+            from actions._llm import gemini
+            model     = gemini("gemini-2.5-flash-lite")
             steps_str = "\n".join(f"- {s.get('description', '')}" for s in completed_steps)
             prompt    = (
                 f'User goal: "{goal}"\n'
