@@ -16,7 +16,7 @@ try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 except Exception as _e:
-    log_error(_e, context="main.unknown", severity="warning")
+    print(f"WARN: stdout/stderr reconfigure failed: {_e}")
 
 import sounddevice as sd
 from google import genai
@@ -33,6 +33,8 @@ from actions.office_builder     import create_presentation, create_spreadsheet
 from PyQt6.QtCore import QTimer
 from actions.attention_monitor import AttentionMonitor, speak_native, stop_native_speech, handle_call_action, read_event_preview
 from actions.daily_briefing import compile_daily_briefing
+from actions.screen_processor import screen_process
+from actions.send_message import send_message
 from or_client import client as openrouter_client
 from workspace_store import store as workspace_store
 from smart_home.service import SmartHomeService
