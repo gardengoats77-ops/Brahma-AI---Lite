@@ -1,0 +1,41 @@
+# requirements-pi.txt — Raspberry Pi 5 + Hailo-10H + Whisplay HAT subset.
+# Intentionally narrower than requirements-linux.txt: no PyQt6, no PyAutogui,
+# no Windows desktop automation. Built for Debian Trixie, Python 3.13.
+#
+# Install with:
+#   python3 -m venv .venv --system-site-packages
+#   .venv/bin/pip install -r requirements-pi.txt
+#
+# Or reuse the existing Star AI venv at /opt/star-ai/.venv (already has
+# sounddevice, numpy, fastapi — just add the extras below):
+#   /opt/star-ai/.venv/bin/pip install -r requirements-pi.txt
+
+# ── Voice / AI ──────────────────────────────────────────────────────────────
+sounddevice==0.5.5
+google-genai==2.16.0
+edge-tts==7.2.8
+vosk==0.3.45
+
+# ── Hailo NPU ───────────────────────────────────────────────────────────────
+# hailo_platform — install manually from the Hailo developer zone:
+# https://hailo.ai/developer-zone/
+# The hailort apt package provides hailortcli; the Python binding may need
+# a separate wheel. When absent, pi/hailo_engine.py degrades to a no-op.
+
+# ── Display (SPI TFT via luma.lcd) ──────────────────────────────────────────
+luma.core==2.6.0
+luma.lcd==2.13.0
+spidev==3.7
+
+# ── Numeric / image ─────────────────────────────────────────────────────────
+numpy>=2.2.0
+Pillow>=10.0.0
+
+# ── Web dashboard (reuse existing dashboard/server.py) ──────────────────────
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+python-multipart==0.0.32
+
+# ── Reasoning / config ──────────────────────────────────────────────────────
+requests==2.34.2
+psutil==7.2.2

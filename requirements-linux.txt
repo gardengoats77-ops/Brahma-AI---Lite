@@ -1,0 +1,61 @@
+# requirements-linux.txt — Linux/macOS-installable subset of requirements.txt
+#
+# Almighty AI is Windows-first. The following packages are Windows-only
+# and are intentionally NOT listed here (they cannot build/install on Linux):
+#   pyaudio, pycaw, comtypes, pywinauto, win10toast, pypiwin32/pywin32
+#
+# On non-Windows platforms `linux_shim.py` (imported first from main.py)
+# stubs those modules so the app still imports and its cross-platform parts
+# (UI, dashboard, TTS, tools) keep working. Windows-only *features* degrade
+# gracefully instead of crashing.
+#
+# Versions are pinned to what was verified working in the reference venv
+# (Python 3.13). Install with:
+#   python -m venv .venv
+#   .venv/bin/pip install -r requirements-linux.txt
+#   .venv/bin/python -m playwright install chromium   # optional, browser tools
+
+# ── Voice / AI ───────────────────────────────────────────────────────────────
+sounddevice==0.5.5
+google-genai==2.16.0
+edge-tts==7.2.8
+
+# ── Web / network ────────────────────────────────────────────────────────────
+requests==2.34.2
+beautifulsoup4==4.15.0
+duckduckgo-search==8.1.1
+playwright==1.62.0
+youtube-transcript-api==1.2.4
+python-kasa==0.10.2
+
+# ── Desktop automation (cross-platform subset) ───────────────────────────────
+pyautogui==0.9.54
+pyperclip==1.11.0
+pygetwindow==0.0.9
+opencv-python==5.0.0.93
+mediapipe==1.0.0
+numpy==2.5.1
+mss==10.2.0
+Pillow==12.3.0
+psutil==7.2.2
+Send2Trash==2.1.0
+
+# ── Office / content generation ──────────────────────────────────────────────
+openpyxl==3.1.5
+python-pptx==1.0.2
+python-docx==1.2.0
+reportlab==5.0.0
+qrcode[pil]==8.2
+
+# ── Integrations ─────────────────────────────────────────────────────────────
+discord.py==2.7.1
+mcp==1.28.1
+
+# ── Local dashboard server ───────────────────────────────────────────────────
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+python-multipart==0.0.32
+cryptography==50.0.0
+
+# ── UI ───────────────────────────────────────────────────────────────────────
+PyQt6==6.11.0

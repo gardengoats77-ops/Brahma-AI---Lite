@@ -1,0 +1,21 @@
+[Unit]
+Description=Brahma AI Lite — headless voice assistant (Pi 5 + Hailo + Whisplay)
+After=network-online.target sound.target
+Wants=network-online.target sound.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Brahma-AI---Lite
+Environment=BRAHMA_PI_HEADLESS=1
+# If Hailo NPU is installed, set BRAHMA_HEF_PATH to your compiled HEF.
+# Environment=BRAHMA_HEF_PATH=/usr/share/hailo-models/yolov8s_pose_h10.hef
+ExecStart=/opt/star-ai/.venv/bin/python %h/Brahma-AI---Lite/pi_main.py
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=%h
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

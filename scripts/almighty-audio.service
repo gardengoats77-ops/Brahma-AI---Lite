@@ -1,0 +1,13 @@
+[Unit]
+Description=Almighty AI audio setup (force ALC897 analog, pin default sink, unmute)
+After=pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire.service pipewire-pulse.service wireplumber.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%h/.local/bin/almighty-setup-audio.sh
+Nice=0
+
+[Install]
+WantedBy=default.target
