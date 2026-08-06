@@ -1,0 +1,43 @@
+{
+  "servers": [
+    {
+      "name": "filesystem",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/home/you/Documents",
+        "/home/you/Downloads"
+      ],
+      "env": {}
+    },
+    {
+      "name": "github",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "your_token_here"
+      }
+    },
+    {
+      "name": "playwright",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"],
+      "env": {}
+    },
+    {
+      "name": "cloud-postgres",
+      "transport": "http",
+      "url": "https://mcp.example.com/mcp",
+      "token": "your_bearer_token_here"
+    },
+    {
+      "name": "local-remote",
+      "transport": "streamable-http",
+      "url": "http://127.0.0.1:8787/mcp",
+      "headers": {
+        "X-API-Key": "optional_extra_header"
+      }
+    }
+  ]
+}
