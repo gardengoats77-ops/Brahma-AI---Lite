@@ -37,6 +37,17 @@ config/update_private.pem
 # Generated codebase knowledge graph (understand-anything)
 .understand-anything/
 
+# Agent / AI tool runtime state
+.agents/
+.hermes/
+.mimocode/
+
+#技能/skills runtime (auto-generated local skills)
+skills/
+
+# Vosk wake-word model (downloaded on first setup, not vendored)
+config/models/vosk-model-*/
+
 # Marker files (regenerated on first run)
 config/.desktop_shortcut_created
 
