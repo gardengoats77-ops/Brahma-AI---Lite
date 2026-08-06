@@ -11,7 +11,7 @@ from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea,
     QVBoxLayout, QWidget, QSizePolicy, QDialog,
-    QLineEdit, QTextEdit,
+    QLineEdit, QTextEdit, QMessageBox,
 )
 
 from memory.memory_manager import load_memory, save_memory, update_memory, forget

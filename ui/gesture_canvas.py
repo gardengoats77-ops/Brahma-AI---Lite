@@ -4,8 +4,8 @@ import math
 import random
 import time
 
-from PyQt6.QtCore import Qt, QTimer, QPoint, QRect, QSize, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QPixmap, QBrush
+from PyQt6.QtCore import Qt, QTimer, QPoint, QPointF, QRect, QRectF, QSize, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QPixmap, QBrush, QRadialGradient
 from PyQt6.QtWidgets import QWidget, QSizePolicy
 
 from .styles import C

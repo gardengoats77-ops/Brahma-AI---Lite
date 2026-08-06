@@ -17,25 +17,51 @@ import webbrowser
 from collections import deque
 from pathlib import Path
 
+# Window size constants
+_MIN_W = 800
+_MIN_H = 640
+_DEFAULT_W = 1200
+_DEFAULT_H = 800
+_LEFT_W = 260
+_RIGHT_W = 400
+
+# Background image
+BACKGROUND_IMAGE_FILE = Path(__file__).resolve().parent.parent / "assets" / "background.png"
+
+# Config / file-path constants
+BASE_DIR = Path(__file__).resolve().parent.parent
+CONFIG_DIR = BASE_DIR / "config"
+API_FILE = CONFIG_DIR / "api_keys.json"
+APP_SETTINGS_FILE = CONFIG_DIR / "app_settings.json"
+DISCORD_SETTINGS_FILE = CONFIG_DIR / "discord_settings.json"
+
 import psutil
+import traceback
 from core.error_handler import log_error
+
+if platform.system() == "Windows":
+    import winreg
+else:
+    winreg = None  # type: ignore
 
 from PyQt6.QtCore import (
     Qt, QTimer, QPropertyAnimation, QEasingCurve, QPoint, QRect, QSize,
     QParallelAnimationGroup, QSequentialAnimationGroup, QUrl, QThread,
-    pyqtSignal, pyqtSlot, QMetaObject, Q_ARG, QByteArray)
+    pyqtSignal, pyqtSlot, QMetaObject, Q_ARG, QByteArray, QEvent)
 from PyQt6.QtGui import (
     QAction,
     QColor, QFont, QFontMetrics, QIcon, QImage, QLinearGradient,
     QPainter, QPainterPath, QPalette, QPen, QPixmap, QPolygon,
-    QRadialGradient, QRegion, QBrush, QTransform, QFontDatabase)
+    QRadialGradient, QRegion, QBrush, QTransform, QFontDatabase,
+    QKeySequence, QShortcut)
 from PyQt6.QtWidgets import (
     QApplication, QFrame, QGraphicsDropShadowEffect, QGraphicsOpacityEffect,
     QHBoxLayout, QLabel, QLineEdit, QMainWindow, QScrollArea, QSizePolicy,
     QVBoxLayout, QWidget, QDialog, QPushButton, QFileDialog, QSlider,
     QStackedWidget, QTextEdit, QToolButton, QMessageBox, QProgressBar,
     QSpinBox, QComboBox, QCheckBox, QTabWidget, QMenu, QSystemTrayIcon, QListWidget, QListWidgetItem, QGridLayout,
-    QFormLayout, QGroupBox, QSplitter, QPlainTextEdit)
+    QFormLayout, QGroupBox, QSplitter, QPlainTextEdit,
+    QColorDialog, QInputDialog, QStyle)
 
 from discord_bot import DiscordBotService
 from gesture_utils import estimate_gesture_state
@@ -56,7 +82,7 @@ from .widgets import (
     SmallPanelCard, StatCard, LogWidget, FileDropZone, _DropCanvas,
     SetupOverlay, CommandBar, DeveloperModeDialog, ScanningOverlay,
     BootSequenceOverlay, IncomingAlertDialog, MeetingOverlay,
-    FloatingLauncher, GestureCameraPreview)
+    FloatingLauncher, GestureCameraPreview, _metrics, _FILE_ICONS)
 from .gesture_canvas import _GestureRenderCanvas
 from .windows_integration import (
     _quiet_run, _quote_cmd_arg, _hidden_launch_args, _startup_run_value,

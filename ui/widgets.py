@@ -13,12 +13,20 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
+from typing import Any
 
 import psutil
 from core.error_handler import log_error
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+CONFIG_DIR = BASE_DIR / "config"
+MODEL_DOWNLOAD_URL = (
+    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+    "hand_landmarker/float16/1/hand_landmarker.task"
+)
+
 from PyQt6.QtCore import (
-    Qt, QTimer, QPropertyAnimation, QEasingCurve, QPoint, QRect, QSize,
+    Qt, QTimer, QPropertyAnimation, QEasingCurve, QPoint, QPointF, QRect, QRectF, QSize,
     QParallelAnimationGroup, QSequentialAnimationGroup, QUrl, QThread,
     pyqtProperty,
     pyqtSignal, pyqtSlot, QMetaObject, Q_ARG, QByteArray)
@@ -26,14 +34,16 @@ from PyQt6.QtGui import (
     QAction,
     QColor, QFont, QFontMetrics, QIcon, QImage, QLinearGradient,
     QPainter, QPainterPath, QPalette, QPen, QPixmap, QPolygon,
-    QRadialGradient, QRegion, QBrush, QTransform, QFontDatabase)
+    QRadialGradient, QRegion, QBrush, QTransform, QFontDatabase,
+    QDragEnterEvent, QDropEvent, QTextOption)
 from PyQt6.QtWidgets import (
     QApplication, QFrame, QGraphicsDropShadowEffect, QGraphicsOpacityEffect,
     QHBoxLayout, QLabel, QLineEdit, QMainWindow, QScrollArea, QSizePolicy,
     QVBoxLayout, QWidget, QDialog, QPushButton, QFileDialog, QSlider,
     QStackedWidget, QTextEdit, QToolButton, QMessageBox, QProgressBar,
     QSpinBox, QComboBox, QCheckBox, QTabWidget, QMenu, QSystemTrayIcon, QListWidget, QListWidgetItem, QGridLayout,
-    QFormLayout, QGroupBox, QSplitter, QPlainTextEdit)
+    QFormLayout, QGroupBox, QSplitter, QPlainTextEdit,
+    QInputDialog, QTextBrowser)
 
 from discord_bot import DiscordBotService
 from gesture_utils import estimate_gesture_state

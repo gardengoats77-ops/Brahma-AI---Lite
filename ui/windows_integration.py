@@ -7,11 +7,18 @@ import sys
 import time
 from pathlib import Path
 
+import psutil
 from core.error_handler import log_error
 
 from .styles import C, _base_dir
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
+
+# Lazy BUILD/BASE dir (defined below after imports of Path machinery).
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Camera probe result cache: {ts, ok}
+_CAM_OK_CACHE: dict = {"ts": 0.0, "ok": False}
 
 
 # ── System Helpers ───────────────────────────────────────────────────────────

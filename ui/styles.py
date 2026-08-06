@@ -18,7 +18,7 @@ import psutil
 from core.error_handler import log_error
 
 from PyQt6.QtCore import (
-    Qt, QTimer, QPropertyAnimation, QEasingCurve, QPoint, QRect, QSize,
+    Qt, QTimer, QPropertyAnimation, QEasingCurve, QPoint, QPointF, QRect, QRectF, QSize,
     QParallelAnimationGroup, QSequentialAnimationGroup, QUrl, QThread,
     pyqtSignal, pyqtSlot, QMetaObject, Q_ARG, QByteArray)
 from PyQt6.QtGui import (
@@ -203,6 +203,11 @@ def _markdown_to_html(text: str, role: str = "assistant") -> str:
 # ── File Helpers ─────────────────────────────────────────────────────────────
 
 def _file_category(path: Path) -> str:
+    # Lazy import to avoid circular import (dict lives in widgets.py).
+    try:
+        from .widgets import _EXT_TO_CAT
+    except Exception:
+        return "unknown"
     return _EXT_TO_CAT.get(path.suffix.lower().lstrip("."), "unknown")
 
 def _fmt_size(size: int) -> str:
