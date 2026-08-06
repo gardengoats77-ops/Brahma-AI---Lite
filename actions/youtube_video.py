@@ -25,6 +25,7 @@ except ImportError:
     _TRANSCRIPT_OK = False
 
 from config import get_os, is_windows, is_mac, is_linux
+from core.error_handler import log_error
 
 
 def _get_base_dir() -> Path:
@@ -129,8 +130,9 @@ def _get_transcript(video_id: str) -> str | None:
 
         try:
             transcript = transcript_list.find_manually_created_transcript(lang_priority)
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="actions.youtube_video", severity="warning")
 
         if transcript is None:
             try:
@@ -160,7 +162,7 @@ def _summarize_with_gemini(transcript: str, video_url: str) -> str:
     return client.chat(
         f"Please summarize this YouTube video transcript:\n\n{truncated}",
         system=(
-            "You are Rex, an AI assistant for Almighty AI. "
+            "You are REX, an AI assistant. "
             "Summarize YouTube video transcripts clearly and concisely. "
             "Structure: 1-sentence overview, then 3-5 key points. "
             "Be direct. Address the user as 'sir'. "
@@ -178,7 +180,7 @@ def _save_summary(content: str, video_url: str) -> str:
     filepath = desktop / filename
 
     header = (
-        f"Almighty AI - YouTube Summary\n"
+        f"REX - YouTube Summary\n"
         f"{'─' * 50}\n"
         f"URL    : {video_url}\n"
         f"Date   : {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"

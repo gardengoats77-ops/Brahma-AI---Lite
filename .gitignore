@@ -41,6 +41,7 @@ config/update_private.pem
 .agents/
 .hermes/
 .mimocode/
+.jarvis-data/
 
 #技能/skills runtime (auto-generated local skills)
 skills/

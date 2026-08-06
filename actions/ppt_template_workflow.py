@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import parse_qs, quote_plus, urljoin, urlparse
 
 import requests
+from core.error_handler import log_error
 
 try:
     from bs4 import BeautifulSoup
@@ -665,7 +666,7 @@ def _materialize_template_file(downloaded_path: Path, dest_path: Path) -> Path |
         return dest_path
 
     if zipfile.is_zipfile(downloaded_path):
-        with tempfile.TemporaryDirectory(prefix="almighty_pptx_extract_") as tmpdir:
+        with tempfile.TemporaryDirectory(prefix="rex_pptx_extract_") as tmpdir:
             extract_dir = Path(tmpdir)
             with zipfile.ZipFile(downloaded_path, "r") as zf:
                 zf.extractall(extract_dir)
@@ -692,8 +693,9 @@ def _download_url(url: str, dest: Path) -> Path | None:
         try:
             if dest.with_suffix(".download").exists():
                 dest.with_suffix(".download").unlink()
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="actions.ppt_template_workflow", severity="debug")
 
 
 def _choose_template_candidate(results: list[dict[str, str]], profile: dict[str, Any], query: str) -> dict[str, str] | None:
@@ -844,8 +846,9 @@ def _pick_layout(prs, has_image: bool, is_title: bool):
         for ph in layout.placeholders:
             try:
                 layout_types.append(_placeholder_type_name(ph.placeholder_format.type))
-            except Exception:
-                pass
+            except Exception as _e:
+
+                log_error(_e, context="actions.ppt_template_workflow", severity="debug")
         score = 0
         if is_title:
             if "title" in layout_types:
@@ -944,8 +947,9 @@ def _load_related_images(profile: dict[str, Any], slides: list[dict[str, Any]], 
                 try:
                     if dest.exists():
                         dest.unlink()
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    log_error(_e, context="actions.ppt_template_workflow", severity="debug")
                 continue
     return results
 
@@ -1018,8 +1022,9 @@ def build_presentation_from_template(
         if title_shape is not None:
             try:
                 _fill_text_shape(title_shape, title_text)
-            except Exception:
-                pass
+            except Exception as _e:
+
+                log_error(_e, context="actions.ppt_template_workflow", severity="debug")
 
         if subtitle_shape is not None:
             sub_text = _clean_text(spec.get("notes") or profile.get("audience") or profile.get("style") or "")
@@ -1027,8 +1032,9 @@ def build_presentation_from_template(
                 sub_text = profile.get("presentation_type", "")
             try:
                 _fill_text_shape(subtitle_shape, sub_text)
-            except Exception:
-                pass
+            except Exception as _e:
+
+                log_error(_e, context="actions.ppt_template_workflow", severity="debug")
 
         body_text = " • ".join(bullet_items[:3]) if bullet_items else title_text
         if body_shapes:
@@ -1038,8 +1044,9 @@ def build_presentation_from_template(
             except Exception:
                 try:
                     first_body.text = body_text
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    log_error(_e, context="actions.ppt_template_workflow", severity="debug")
 
         if picture_shape is not None:
             image_path = _next_image()
@@ -1053,8 +1060,9 @@ def build_presentation_from_template(
                         width = picture_shape.width
                         height = picture_shape.height
                         slide.shapes.add_picture(str(image_path), left, top, width=width, height=height)
-                    except Exception:
-                        pass
+                    except Exception as _e:
+
+                        log_error(_e, context="actions.ppt_template_workflow", severity="debug")
 
         # If the template layout has no useful body placeholder, add a minimal text box so content is not lost.
         if not body_shapes and not picture_shape:
@@ -1064,8 +1072,9 @@ def build_presentation_from_template(
                 tf.word_wrap = True
                 p = tf.paragraphs[0]
                 p.text = body_text
-            except Exception:
-                pass
+            except Exception as _e:
+
+                log_error(_e, context="actions.ppt_template_workflow", severity="debug")
 
     prs.save(str(output_path))
     if auto_open:
@@ -1073,6 +1082,7 @@ def build_presentation_from_template(
             from actions.office_builder import _open_file  # local import to avoid circular hint in type checkers
 
             _open_file(output_path)
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="actions.ppt_template_workflow", severity="debug")
     return f"Presentation created: {output_path}"

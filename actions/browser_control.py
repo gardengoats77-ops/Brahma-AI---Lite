@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from core.error_handler import log_error
 
 
 def _log(message: str) -> None:
@@ -45,8 +46,8 @@ def _get_default_browser_id() -> str:
             )
             return result.stdout.lower()
 
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.browser_control", severity="warning")
 
     return ""
 
@@ -97,10 +98,11 @@ def _get_opera_executable() -> str | None:
                     if exe and Path(exe).exists():
                         _log(f"[Browser] 🔍 Opera found via registry: {exe}")
                         return exe
-                except Exception:
+                except Exception as _e:
+                    log_error(_e, context="actions.browser_control", severity="warning")
                     continue
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.browser_control", severity="warning")
     return None
 
 
@@ -301,8 +303,8 @@ class _BrowserThread:
         self._page = page
         try:
             await page.bring_to_front()
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.browser_control", severity="warning")
         return f"Switched to tab {index}: {page.url}"
 
     async def _list_tabs(self) -> str:
@@ -445,20 +447,20 @@ class _BrowserThread:
                 try:
                     await page.get_by_role(role).first.click(timeout=5000)
                     return f"Clicked ({role}): '{description}'"
-                except Exception:
-                    pass
+                except Exception as _e:
+                    log_error(_e, context="actions.browser_control", severity="warning")
 
         try:
             await page.get_by_text(description, exact=False).first.click(timeout=5000)
             return f"Clicked (text): '{description}'"
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.browser_control", severity="warning")
 
         try:
             await page.get_by_placeholder(description, exact=False).first.click(timeout=5000)
             return f"Clicked (placeholder): '{description}'"
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.browser_control", severity="warning")
 
         return f"Could not find: '{description}'"
 
@@ -475,7 +477,8 @@ class _BrowserThread:
                 await el.clear()
                 await el.type(text, delay=50)
                 return f"Typed into ({method}): '{description}'"
-            except Exception:
+            except Exception as _e:
+                log_error(_e, context="actions.browser_control", severity="warning")
                 continue
 
         return f"Could not find input: '{description}'"

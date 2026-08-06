@@ -10,6 +10,7 @@ from typing import Callable
 
 from agent.planner       import create_plan, replan
 from agent.error_handler import analyze_error, generate_fix, ErrorDecision
+from core.error_handler import log_error
 
 
 def _run_generated_code(description: str, speak: Callable | None = None) -> str:
@@ -27,8 +28,9 @@ def _run_generated_code(description: str, speak: Callable | None = None) -> str:
             key     = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                 r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders")
             desktop = Path(winreg.QueryValueEx(key, "Desktop")[0])
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="agent.executor", severity="warning")
 
     from actions._llm import gemini
     model = gemini(
@@ -70,8 +72,9 @@ def _run_generated_code(description: str, speak: Callable | None = None) -> str:
 
         try:
             os.unlink(tmp_path)
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="agent.executor", severity="warning")
 
         output = result.stdout.strip()
         error  = result.stderr.strip()

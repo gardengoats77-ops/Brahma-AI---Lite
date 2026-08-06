@@ -9,9 +9,25 @@ class PluginManager:
         self.base_dir = Path(base_dir)
         self.plugins_dir = self.base_dir / "plugins"
         self.plugins: list[Any] = []
-        self.almighty = None
+        self.rex = None
+        self.skill_manager = None  # lazy-bound by collect_skills()
 
-    # ── plugin loading ──────────────────────────────────────────────────────
+    def _ensure_skill_manager(self):
+        """Get or create the shared SkillManager for this base_dir."""
+        if self.skill_manager is not None:
+            return self.skill_manager
+        try:
+            from skill_manager import get_skill_manager
+            self.skill_manager = get_skill_manager(self.base_dir)
+        except Exception:
+            try:
+                from skill_manager import SkillManager
+                self.skill_manager = SkillManager(self.base_dir)
+            except Exception as exc:
+                print(f"[Plugins] SkillManager unavailable: {exc}")
+                self.skill_manager = None
+        return self.skill_manager
+
     def load_plugins(self) -> None:
         if not self.plugins_dir.exists():
             return
@@ -34,71 +50,21 @@ class PluginManager:
             except Exception as exc:
                 print(f"[Plugins] Failed to load {p.name}: {exc}")
 
-        # Register any skills plugins contribute into the shared manager.
+        # Auto-collect any skills registered by loaded plugins (get_skills hook).
         try:
             self.collect_skills()
         except Exception as exc:
-            print(f"[Plugins] collect_skills error: {exc}")
+            print(f"[Plugins] collect_skills failed: {exc}")
 
-    # ── skills integration ──────────────────────────────────────────────────
-    def _skill_manager(self):
-        from skill_manager import get_skill_manager
-        return get_skill_manager(self.base_dir)
-
-    def collect_skills(self) -> int:
-        """Register skills exported by plugins via a ``get_skills()`` hook.
-
-        Each plugin may define ``get_skills()`` returning a list of dicts::
-
-            [{"name": "my-skill", "description": "When to use it",
-              "content": "full markdown instructions"}]
-
-        Returns the number of skills registered.
-        """
-        manager = self._skill_manager()
-        count = 0
-        for p in list(self.plugins):
-            fn = getattr(p, "get_skills", None)
-            if not callable(fn):
-                continue
-            try:
-                for item in fn() or []:
-                    if not isinstance(item, dict):
-                        continue
-                    name = str(item.get("name") or "").strip()
-                    content = str(item.get("content") or item.get("body") or "").strip()
-                    if not name or not content:
-                        continue
-                    manager.register(
-                        name,
-                        description=str(item.get("description") or "").strip(),
-                        content=content,
-                        source="plugin",
-                    )
-                    count += 1
-            except Exception as exc:
-                print(f"[Plugins] get_skills error in {getattr(p, '__name__', str(p))}: {exc}")
-        if count:
-            print(f"[Plugins] Registered {count} plugin skill(s)")
-        return count
-
-    def list_skills(self) -> list[dict]:
-        """All available skills (filesystem + plugins) as {name, description}."""
-        return self._skill_manager().list_skills()
-
-    def load_skill(self, name: str) -> str | None:
-        """Full markdown body for a skill, or None when not found."""
-        return self._skill_manager().load_skill(name)
-
-    def register_almighty(self, almighty_obj) -> None:
-        self.almighty = almighty_obj
+    def register_rex(self, rex_obj) -> None:
+        self.rex = rex_obj
         for p in list(self.plugins):
             try:
-                fn = getattr(p, "on_almighty_created", None)
+                fn = getattr(p, "on_rex_created", None)
                 if callable(fn):
-                    fn(almighty_obj)
+                    fn(rex_obj)
             except Exception as exc:
-                print(f"[Plugins] on_almighty_created error: {exc}")
+                print(f"[Plugins] on_rex_created error: {exc}")
 
     def dispatch(self, hook: str, *args, **kwargs):
         """Call hook on plugins. If any plugin returns True, stop and return True."""
@@ -106,9 +72,9 @@ class PluginManager:
             try:
                 fn = getattr(p, hook, None)
                 if callable(fn):
-                    # call with almighty if plugin expects it
+                    # call with rex if plugin expects it
                     try:
-                        res = fn(*args, **kwargs, almighty=self.almighty)
+                        res = fn(*args, **kwargs, rex=self.rex)
                     except TypeError:
                         res = fn(*args, **kwargs)
                     if res is True:
@@ -116,3 +82,54 @@ class PluginManager:
             except Exception as exc:
                 print(f"[Plugins] Hook {hook} error in {getattr(p,'__name__',str(p))}: {exc}")
         return False
+
+    # ── Skill integration ───────────────────────────────────────────────
+    # Plugins can contribute reusable skills (markdown prompts) by exposing
+    # a get_skills() hook returning a list of {name, description, content}
+    # dicts. PluginManager collects them into the shared SkillManager so the
+    # planner/executor can query them like file-based skills.
+
+    def collect_skills(self) -> int:
+        """Ask every plugin for get_skills() and register the results.
+
+        Returns the number of skills registered. Errors are logged and
+        skipped — one bad plugin never blocks the rest.
+        """
+        sm = self._ensure_skill_manager()
+        if sm is None:
+            return 0
+        count = 0
+        for p in list(self.plugins):
+            try:
+                fn = getattr(p, "get_skills", None)
+                if not callable(fn):
+                    continue
+                for entry in fn() or []:
+                    name = entry.get("name")
+                    content = entry.get("content")
+                    if not name or content is None:
+                        continue  # skip incomplete entries
+                    sm.register(
+                        name=name,
+                        description=entry.get("description", ""),
+                        content=content,
+                        source="plugin",
+                    )
+                    count += 1
+            except Exception as exc:
+                print(f"[Plugins] get_skills error in {getattr(p,'__name__',str(p))}: {exc}")
+        return count
+
+    def load_skill(self, name: str):
+        """Return the markdown body for a skill name, or None."""
+        sm = self._ensure_skill_manager()
+        if sm is None:
+            return None
+        return sm.load_skill(name)
+
+    def list_skills(self) -> list[dict]:
+        """Return the catalog list of skills (name + description)."""
+        sm = self._ensure_skill_manager()
+        if sm is None:
+            return []
+        return sm.list_skills()

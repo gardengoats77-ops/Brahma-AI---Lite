@@ -10,6 +10,7 @@ from typing import Any
 import requests
 
 from .base import ProviderField, SmartHomeProvider
+from core.error_handler import log_error
 
 
 ATOMBERG_BASE_URL = "https://api.developer.atomberg-iot.com"
@@ -316,8 +317,9 @@ class KasaProvider(SmartHomeProvider):
         for kasa_device in devices:
             try:
                 await kasa_device.update()
-            except Exception:
-                pass
+            except Exception as _e:
+
+                log_error(_e, context="smart_home.providers.builtin", severity="debug")
             results.append(self._to_record(kasa_device, credentials))
         return results
 
@@ -349,8 +351,9 @@ class KasaProvider(SmartHomeProvider):
 
         try:
             await kasa_device.update()
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="smart_home.providers.builtin", severity="debug")
         refreshed = self._to_record(kasa_device, device.get("provider_credentials") or {})
         traits = dict(device.get("traits") or {})
         traits.update(refreshed.get("traits", {}))

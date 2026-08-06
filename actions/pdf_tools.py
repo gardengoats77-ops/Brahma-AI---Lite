@@ -1,5 +1,5 @@
 """
-pdf_tools.py - Almighty AI PDF support
+pdf_tools.py - REX PDF support
 
 Creates editable-in-spirit PDF documents from structured content and converts
 existing DOCX / text files into readable PDFs without relying on LibreOffice.
@@ -14,10 +14,9 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from core.error_handler import log_error
 
-from config.profile import get_user_name
-
-PROJECT_NAME = "Almighty AI"
+PROJECT_NAME = "REX"
 DEFAULT_OUTPUT_DIR = Path.home() / "Downloads"
 
 
@@ -56,8 +55,9 @@ def _open_file(path: Path) -> None:
             subprocess.Popen(["open", str(path)])
         else:
             subprocess.Popen(["xdg-open", str(path)])
-    except Exception:
-        pass
+    except Exception as _e:
+
+        log_error(_e, context="actions.pdf_tools", severity="debug")
 
 
 def _parse_json_arg(value, fallback):
@@ -227,17 +227,17 @@ def _render_title_page(story, pdf, title: str, subtitle: str | None, styles):
     story.append(
         pdf["Paragraph"](
             title,
-            styles["almighty_doc_title"],
+            styles["rex_doc_title"],
         )
     )
     if subtitle:
         story.append(pdf["Spacer"](1, 0.15 * pdf["inch"]))
-        story.append(pdf["Paragraph"](subtitle, styles["almighty_doc_subtitle"]))
+        story.append(pdf["Paragraph"](subtitle, styles["rex_doc_subtitle"]))
     story.append(pdf["Spacer"](1, 0.35 * pdf["inch"]))
     story.append(
         pdf["Paragraph"](
             f"Created by {PROJECT_NAME} on {datetime.now().strftime('%B %d, %Y')}",
-            styles["almighty_doc_meta"],
+            styles["rex_doc_meta"],
         )
     )
     story.append(pdf["Spacer"](1, 0.5 * pdf["inch"]))
@@ -255,18 +255,18 @@ def _pdf_story_from_blocks(blocks: list[dict], pdf, styles):
         if kind == "heading":
             number_index = 1
             level = int(block.get("level") or 1)
-            story.append(pdf["Paragraph"](text, styles.get(f"almighty_h{min(max(level, 1), 3)}", styles["almighty_h1"])))
+            story.append(pdf["Paragraph"](text, styles.get(f"rex_h{min(max(level, 1), 3)}", styles["rex_h1"])))
             story.append(pdf["Spacer"](1, 0.1 * pdf["inch"]))
         elif kind == "bullet":
-            story.append(pdf["Paragraph"](f"- {text}", styles["almighty_body"]))
+            story.append(pdf["Paragraph"](f"- {text}", styles["rex_body"]))
             story.append(pdf["Spacer"](1, 0.03 * pdf["inch"]))
         elif kind == "numbered":
-            story.append(pdf["Paragraph"](f"{number_index}. {text}", styles["almighty_body"]))
+            story.append(pdf["Paragraph"](f"{number_index}. {text}", styles["rex_body"]))
             number_index += 1
             story.append(pdf["Spacer"](1, 0.06 * pdf["inch"]))
         elif kind == "table":
             rows = block.get("text") or []
-            table_data = [[pdf["Paragraph"](cell, styles["almighty_table_cell"]) for cell in row.split(" | ")] for row in rows]
+            table_data = [[pdf["Paragraph"](cell, styles["rex_table_cell"]) for cell in row.split(" | ")] for row in rows]
             if table_data:
                 table = pdf["Table"](table_data, repeatRows=0)
                 table.setStyle(pdf["TableStyle"]([
@@ -282,7 +282,7 @@ def _pdf_story_from_blocks(blocks: list[dict], pdf, styles):
                 story.append(table)
                 story.append(pdf["Spacer"](1, 0.15 * pdf["inch"]))
         else:
-            story.append(pdf["Paragraph"](text, styles["almighty_body"]))
+            story.append(pdf["Paragraph"](text, styles["rex_body"]))
             story.append(pdf["Spacer"](1, 0.09 * pdf["inch"]))
     return story
 
@@ -291,7 +291,7 @@ def create_pdf(parameters: dict, player=None) -> str:
     pdf = _import_pdf()
     title = (parameters.get("title") or parameters.get("name") or "Document").strip()
     subtitle = (parameters.get("subtitle") or "").strip()
-    output_path = _resolve_output_path(parameters.get("output_path"), title, ".pdf", "almighty_ai_output")
+    output_path = _resolve_output_path(parameters.get("output_path"), title, ".pdf", "rex_ai_output")
     auto_open = parameters.get("auto_open", True)
     action = (parameters.get("action") or "create").lower().strip()
     source_path_str = (parameters.get("file_path") or "").strip()
@@ -299,7 +299,7 @@ def create_pdf(parameters: dict, player=None) -> str:
 
     styles = pdf["getSampleStyleSheet"]()
     styles.add(pdf["ParagraphStyle"](
-        name="almighty_doc_title",
+        name="rex_doc_title",
         parent=styles["Title"],
         fontName="Helvetica-Bold",
         fontSize=22,
@@ -309,7 +309,7 @@ def create_pdf(parameters: dict, player=None) -> str:
         spaceAfter=10,
     ))
     styles.add(pdf["ParagraphStyle"](
-        name="almighty_doc_subtitle",
+        name="rex_doc_subtitle",
         parent=styles["BodyText"],
         fontName="Helvetica",
         fontSize=12,
@@ -319,7 +319,7 @@ def create_pdf(parameters: dict, player=None) -> str:
         spaceAfter=6,
     ))
     styles.add(pdf["ParagraphStyle"](
-        name="almighty_doc_meta",
+        name="rex_doc_meta",
         parent=styles["BodyText"],
         fontName="Helvetica",
         fontSize=9,
@@ -328,7 +328,7 @@ def create_pdf(parameters: dict, player=None) -> str:
         alignment=pdf["TA_CENTER"],
     ))
     styles.add(pdf["ParagraphStyle"](
-        name="almighty_body",
+        name="rex_body",
         parent=styles["BodyText"],
         fontName="Helvetica",
         fontSize=10.5,
@@ -337,7 +337,7 @@ def create_pdf(parameters: dict, player=None) -> str:
         spaceAfter=6,
     ))
     styles.add(pdf["ParagraphStyle"](
-        name="almighty_h1",
+        name="rex_h1",
         parent=styles["Heading1"],
         fontName="Helvetica-Bold",
         fontSize=15,
@@ -347,7 +347,7 @@ def create_pdf(parameters: dict, player=None) -> str:
         spaceAfter=6,
     ))
     styles.add(pdf["ParagraphStyle"](
-        name="almighty_h2",
+        name="rex_h2",
         parent=styles["Heading2"],
         fontName="Helvetica-Bold",
         fontSize=12.5,
@@ -357,7 +357,7 @@ def create_pdf(parameters: dict, player=None) -> str:
         spaceAfter=5,
     ))
     styles.add(pdf["ParagraphStyle"](
-        name="almighty_h3",
+        name="rex_h3",
         parent=styles["Heading3"],
         fontName="Helvetica-Bold",
         fontSize=11,
@@ -367,7 +367,7 @@ def create_pdf(parameters: dict, player=None) -> str:
         spaceAfter=4,
     ))
     styles.add(pdf["ParagraphStyle"](
-        name="almighty_table_cell",
+        name="rex_table_cell",
         parent=styles["BodyText"],
         fontName="Helvetica",
         fontSize=9.5,
@@ -402,14 +402,14 @@ def create_pdf(parameters: dict, player=None) -> str:
         topMargin=0.8 * pdf["inch"],
         bottomMargin=0.8 * pdf["inch"],
         title=title,
-        author=parameters.get("author") or get_user_name(),
+        author=parameters.get("author") or "chuckee",
         subject=parameters.get("subject") or "PDF document",
     )
 
     story = []
     if title or subtitle:
         _render_title_page(story, pdf, title, subtitle, styles)
-        story.append(pdf["Paragraph"]("<hr/>", styles["almighty_body"]))
+        story.append(pdf["Paragraph"]("<hr/>", styles["rex_body"]))
         story.append(pdf["Spacer"](1, 0.18 * pdf["inch"]))
 
     if action == "create_letter":
@@ -417,23 +417,23 @@ def create_pdf(parameters: dict, player=None) -> str:
         date_value = (parameters.get("date") or datetime.now().strftime("%B %d, %Y")).strip()
         salutation = (parameters.get("salutation") or (f"Dear {recipient}," if recipient else "Dear Sir or Madam,")).strip()
         closing = (parameters.get("closing") or "Sincerely,").strip()
-        signature = (parameters.get("signature") or parameters.get("author") or get_user_name()).strip()
+        signature = (parameters.get("signature") or parameters.get("author") or "chuckee").strip()
         body_text = parameters.get("body") or parameters.get("content") or ""
 
-        story.append(pdf["Paragraph"](date_value, styles["almighty_body"]))
+        story.append(pdf["Paragraph"](date_value, styles["rex_body"]))
         story.append(pdf["Spacer"](1, 0.08 * pdf["inch"]))
         if recipient:
-            story.append(pdf["Paragraph"](recipient, styles["almighty_body"]))
+            story.append(pdf["Paragraph"](recipient, styles["rex_body"]))
             story.append(pdf["Spacer"](1, 0.06 * pdf["inch"]))
-        story.append(pdf["Paragraph"](salutation, styles["almighty_body"]))
+        story.append(pdf["Paragraph"](salutation, styles["rex_body"]))
         story.append(pdf["Spacer"](1, 0.08 * pdf["inch"]))
         for para in _normalize_list(parameters.get("paragraphs")) or [p.strip() for p in re.split(r"\n\s*\n", str(body_text)) if p.strip()]:
-            story.append(pdf["Paragraph"](str(para), styles["almighty_body"]))
+            story.append(pdf["Paragraph"](str(para), styles["rex_body"]))
             story.append(pdf["Spacer"](1, 0.08 * pdf["inch"]))
         story.append(pdf["Spacer"](1, 0.18 * pdf["inch"]))
-        story.append(pdf["Paragraph"](closing, styles["almighty_body"]))
+        story.append(pdf["Paragraph"](closing, styles["rex_body"]))
         story.append(pdf["Spacer"](1, 0.3 * pdf["inch"]))
-        story.append(pdf["Paragraph"](signature, styles["almighty_body"]))
+        story.append(pdf["Paragraph"](signature, styles["rex_body"]))
     else:
         story.extend(_pdf_story_from_blocks(blocks, pdf, styles))
 

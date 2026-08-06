@@ -12,55 +12,34 @@ import traceback
 import os
 from pathlib import Path
 
-# Linux/macOS compatibility: stub Windows-only modules (winreg, pywinauto,
-# pycaw, ...) so the app can import and run its cross-platform parts.
-# Must run before any module-scope Windows import (e.g. actions/game_updater).
-import linux_shim  # noqa: F401
-
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
+except Exception as _e:
+    log_error(_e, context="main.unknown", severity="warning")
 
 import sounddevice as sd
 from google import genai
 from google.genai import types
-from ui import AlmightyUI
+from ui import REXUI
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
     should_extract_memory, extract_memory
 )
 
-from actions.file_processor import file_processor
-from actions.flight_finder     import flight_finder
-from actions.open_app          import open_app
-from actions.weather_report    import weather_action
-from actions.send_message      import send_message
-from actions.reminder          import reminder
-from actions.computer_settings import computer_settings
-from actions.screen_processor  import screen_process
 from actions.meeting_assistant import MeetingAssistant
-from actions.youtube_video     import youtube_video
-from actions.desktop           import desktop_control
-from actions.browser_control   import browser_control
-from actions.file_controller   import file_controller
 from actions.website_builder   import website_builder
 from actions.office_builder     import create_presentation, create_spreadsheet
-from actions.docx_tools        import word_document
-from actions.pdf_tools         import create_pdf
 from PyQt6.QtCore import QTimer
-from actions.web_search        import web_search as web_search_action
-from actions.computer_control  import computer_control
-from actions.game_updater      import game_updater
 from actions.attention_monitor import AttentionMonitor, speak_native, stop_native_speech, handle_call_action, read_event_preview
 from actions.daily_briefing import compile_daily_briefing
 from or_client import client as openrouter_client
 from workspace_store import store as workspace_store
 from smart_home.service import SmartHomeService
 from plugin_manager import PluginManager
-from skill_manager import get_skill_manager
-from mcp_client import get_mcp_manager
+from core.error_handler import log_error, handle_errors, get_logger
+from core.dispatcher import dispatcher
+from core.action_registry import register_all_actions
 
 try:
     from dashboard.server import DashboardServer
@@ -77,7 +56,7 @@ def get_base_dir():
 BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
-STARTUP_LOG     = Path(os.environ.get("LOCALAPPDATA", str(BASE_DIR))) / "AlmightyAI" / "startup.log"
+STARTUP_LOG     = Path(os.environ.get("LOCALAPPDATA", str(BASE_DIR))) / "RexAI" / "startup.log"
 LIVE_MODEL          = "models/gemini-2.5-flash-native-audio-preview-12-2025"
 CHANNELS            = 1
 SEND_SAMPLE_RATE    = 16000
@@ -102,8 +81,8 @@ def _startup_log(message: str) -> None:
         STARTUP_LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(STARTUP_LOG, "a", encoding="utf-8") as f:
             f.write(message + "\n")
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="main._startup_log", severity="warning")
 
 
 def _ensure_desktop_shortcut() -> None:
@@ -125,9 +104,9 @@ def _ensure_desktop_shortcut() -> None:
             desktop_dir = Path(os.path.expanduser("~")) / "Desktop"
             
         desktop_dir.mkdir(parents=True, exist_ok=True)
-        shortcut_path = desktop_dir / "Almighty AI.lnk"
+        shortcut_path = desktop_dir / "REX.lnk"
         script_path = BASE_DIR / "main.py"
-        icon_path = BASE_DIR / "assets" / "Almighty_AI_Logo.ico"
+        icon_path = BASE_DIR / "assets" / "REX_Logo.ico"
 
         if not icon_path.exists():
             icon_path = None
@@ -158,7 +137,7 @@ def _ensure_desktop_shortcut() -> None:
             f"$Shortcut.Arguments = '{_ps_escape(shortcut_args)}'",
             f"$Shortcut.WorkingDirectory = '{_ps_escape(str(BASE_DIR))}'",
             "$Shortcut.WindowStyle = 7",
-            "$Shortcut.Description = 'Launch Almighty AI'",
+            "$Shortcut.Description = 'Launch REX'",
             f"if ('{_ps_escape(icon_value)}') {{ $Shortcut.IconLocation = '{_ps_escape(icon_value)},0' }}",
             "$Shortcut.Save()",
         ])
@@ -181,7 +160,7 @@ def _load_system_prompt() -> str:
         return PROMPT_PATH.read_text(encoding="utf-8")
     except Exception:
         return (
-            "You are Rex, a calm, direct, and professional AI assistant for Almighty AI. "
+            "You are REX, a calm, direct, and professional AI assistant. "
             "Be concise, direct, and always use the provided tools to complete tasks. "
             "Never simulate or guess results — always call the appropriate tool. "
             "If the user asks to create, build, launch, or open a website, always use the selected workspace folder."
@@ -218,8 +197,8 @@ def _extract_gemini_text(response) -> str:
                 part_text = getattr(part, "text", None)
                 if part_text:
                     text_parts.append(part_text)
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="main._extract_gemini_text", severity="warning")
 
     text = "".join(text_parts).strip()
     if text:
@@ -237,7 +216,7 @@ def _gemini_text_reply(prompt: str) -> str:
         http_options={"api_version": "v1beta"},
     )
     system_prompt = (
-        "You are Rex, a concise, helpful desktop assistant for Almighty AI. "
+        "You are REX, a concise, helpful desktop assistant. "
         "Reply naturally and briefly. Do not mention internal implementation details."
     )
     response = client.models.generate_content(
@@ -292,6 +271,67 @@ def _is_gemini_limit_error(exc: Exception) -> bool:
     ))
 
 
+def _dispatch_frequency_days(service: str) -> int | None:
+    """Mirror of the dispatch PWA's getFrequencyDays()."""
+    s = (service or "").lower()
+    if "weekly" in s:
+        return 7
+    if "2 weeks" in s or "bi-week" in s or "biweekly" in s:
+        return 14
+    if "monthly" in s or "month " in s:
+        return 30
+    return None
+
+
+def _dispatch_parse_job_date(value: str):
+    """Mirror of the dispatch PWA's parseJobDate(). Returns a date or None."""
+    import datetime as _dt
+    if not value or value == "No jobs completed":
+        return None
+    m = re.search(r"([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})", str(value))
+    if m:
+        month_map = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+                     "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
+        month = month_map.get(m.group(1).lower()[:3])
+        if month:
+            try:
+                return _dt.date(int(m.group(3)), month, int(m.group(2)))
+            except ValueError:
+                return None
+    try:
+        return _dt.datetime.strptime(str(value).strip(), "%b %d, %Y").date()
+    except ValueError:
+        return None
+
+
+def _dispatch_due_jobs(state: dict) -> list:
+    """Return jobs that are overdue or due today, mirroring the PWA schedule logic."""
+    import datetime as _dt
+    today = _dt.date.today()
+    due: list = []
+    for job in (state.get("jobs") or []):
+        freq = _dispatch_frequency_days(job.get("service") or "")
+        if not freq:
+            continue
+        last_value = job.get("lastJob")
+        if last_value == "No jobs completed":
+            # Recurring service never serviced — first visit due now (mirrors the PWA)
+            due.append(job)
+            continue
+        last = _dispatch_parse_job_date(last_value)
+        if last is None:
+            # Unparseable date — the PWA marks this 'unknown', not due; skip it
+            continue
+        next_due = last + _dt.timedelta(days=freq)
+        days_overdue = 0
+        while next_due < today:
+            next_due += _dt.timedelta(days=freq)
+            days_overdue += freq
+        if days_overdue > 0 or (next_due - today).days == 0:
+            due.append(job)
+    return due
+
+
 def _looks_like_screen_request(text: str) -> bool:
     t = (text or "").lower()
     if not t:
@@ -322,10 +362,10 @@ def _wakeword_detected(text: str) -> bool:
     if not words:
         return False
     phrases = (
-        "almighty",
-        "hey almighty",
-        "hi almighty",
-        "hello almighty",
+        "rex",
+        "hey rex",
+        "hi rex",
+        "hello rex",
         "hey",
         "hi",
         "hello",
@@ -333,7 +373,7 @@ def _wakeword_detected(text: str) -> bool:
     compact = " ".join(words)
     if compact in phrases or any(p in compact for p in phrases):
         return True
-    return any(word in {"almighty", "hey", "hi", "hello"} for word in words)
+    return any(word in {"rex", "hey", "hi", "hello"} for word in words)
 
 
 def _build_task_plan(text: str) -> list[str]:
@@ -397,11 +437,11 @@ def _build_task_plan(text: str) -> list[str]:
 
 _last_memory_input = ""
 
-def _update_memory_async(user_text: str, almighty_text: str) -> None:
+def _update_memory_async(user_text: str, rex_text: str) -> None:
     global _last_memory_input
 
     user_text   = (user_text   or "").strip()
-    almighty_text = (almighty_text or "").strip()
+    rex_text = (rex_text or "").strip()
 
     if len(user_text) < 5 or user_text == _last_memory_input:
         return
@@ -409,9 +449,9 @@ def _update_memory_async(user_text: str, almighty_text: str) -> None:
 
     try:
         api_key = _get_api_key()
-        if not should_extract_memory(user_text, almighty_text, api_key):
+        if not should_extract_memory(user_text, rex_text, api_key):
             return
-        data = extract_memory(user_text, almighty_text, api_key)
+        data = extract_memory(user_text, rex_text, api_key)
         if data:
             update_memory(data)
             print(f"[Memory] ✅ {list(data.keys())}")
@@ -426,651 +466,15 @@ def _memory_context_for_request(text: str) -> str:
         return ""
 
 
-TOOL_DECLARATIONS = [
-    {
-        "name": "open_app",
-        "description": (
-            "Opens any application on the Windows computer. "
-            "Use this whenever the user asks to open, launch, or start any app, "
-            "website, or program. Always call this tool — never just say you opened it."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "app_name": {
-                    "type": "STRING",
-                    "description": "Exact name of the application (e.g. 'WhatsApp', 'Chrome', 'Spotify')"
-                }
-            },
-            "required": ["app_name"]
-        }
-    },
-    {
-        "name": "web_search",
-        "description": "Searches the web for any information.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "query":  {"type": "STRING", "description": "Search query"},
-                "mode":   {"type": "STRING", "description": "search (default) or compare"},
-                "items":  {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Items to compare"},
-                "aspect": {"type": "STRING", "description": "price | specs | reviews"}
-            },
-            "required": ["query"]
-        }
-    },
-    {
-        "name": "weather_report",
-        "description": "Gives the weather report to user",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "city": {"type": "STRING", "description": "City name"}
-            },
-            "required": ["city"]
-        }
-    },
-    {
-        "name": "send_message",
-        "description": "Sends a text message via WhatsApp, Telegram, Instagram DMs, or other messaging platform. Can also upload media to Instagram when mode=upload and media_path is supplied.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "receiver":     {"type": "STRING", "description": "Recipient contact name for DMs"},
-                "message_text": {"type": "STRING", "description": "The message to send or Instagram caption"},
-                "platform":     {"type": "STRING", "description": "Platform: WhatsApp, Telegram, Instagram, etc."},
-                "mode":         {"type": "STRING", "description": "dm | upload (Instagram only; default: dm)"},
-                "media_path":   {"type": "STRING", "description": "Optional image/video path for Instagram uploads"}
-            },
-            "required": ["platform"]
-        }
-    },
-    {
-        "name": "reminder",
-        "description": "Sets a timed reminder using Windows Task Scheduler.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "date":    {"type": "STRING", "description": "Date in YYYY-MM-DD format"},
-                "time":    {"type": "STRING", "description": "Time in HH:MM format (24h)"},
-                "message": {"type": "STRING", "description": "Reminder message text"}
-            },
-            "required": ["date", "time", "message"]
-        }
-    },
-    {
-        "name": "youtube_video",
-        "description": (
-            "Controls YouTube. Use for: playing videos, summarizing a video's content, "
-            "getting video info, or showing trending videos."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {"type": "STRING", "description": "play | summarize | get_info | trending (default: play)"},
-                "query":  {"type": "STRING", "description": "Search query for play action"},
-                "save":   {"type": "BOOLEAN", "description": "Save summary to Notepad (summarize only)"},
-                "region": {"type": "STRING", "description": "Country code for trending e.g. TR, US"},
-                "url":    {"type": "STRING", "description": "Video URL for get_info action"},
-            },
-            "required": []
-        }
-    },
-    {
-        "name": "screen_process",
-        "description": (
-            "Captures and analyzes the screen or webcam image. "
-            "MUST be called when user asks what is on screen, what you see, "
-            "analyze my screen, look at camera, etc. "
-            "You have NO visual ability without this tool. "
-            "After calling this tool, stay SILENT — the vision module speaks directly."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "angle": {"type": "STRING", "description": "'screen' to capture display, 'camera' for webcam. Default: 'screen'"},
-                "text":  {"type": "STRING", "description": "The question or instruction about the captured image"}
-            },
-            "required": ["text"]
-        }
-    },
-    {
-        "name": "computer_settings",
-        "description": (
-            "Controls the computer: volume, brightness, window management, keyboard shortcuts, "
-            "typing text on screen, closing apps, fullscreen, dark mode, WiFi, restart, shutdown, "
-            "scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page. "
-            "Use for ANY single computer control command. NEVER route to agent_task."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action":      {"type": "STRING", "description": "The action to perform"},
-                "description": {"type": "STRING", "description": "Natural language description of what to do"},
-                "value":       {"type": "STRING", "description": "Optional value: volume level, text to type, etc."}
-            },
-            "required": []
-        }
-    },
-    {
-        "name": "smart_home_control",
-        "description": (
-            "Controls connected smart-home devices such as Atomberg fans and TP-Link Kasa lights/plugs. "
-            "Use when the user asks to turn devices on or off, set fan speed, change brightness, or control a room."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "command": {"type": "STRING", "description": "Natural language smart-home command"}
-            },
-            "required": ["command"]
-        }
-    },
-    {
-        "name": "browser_control",
-        "description": (
-            "Controls the web browser. Use for: opening websites, searching the web, "
-            "navigating pages, clicking elements, filling forms, scrolling, tabs, back/forward, "
-            "refreshing, and any web-based task."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action":      {"type": "STRING", "description": "go_to | navigate | search | click | type | scroll | fill_form | smart_click | smart_type | get_text | press | back | forward | refresh | open_tab | new_tab | switch_tab | list_tabs | close"},
-                "url":         {"type": "STRING", "description": "URL for go_to action"},
-                "query":       {"type": "STRING", "description": "Search query for search action"},
-                "selector":    {"type": "STRING", "description": "CSS selector for click/type"},
-                "text":        {"type": "STRING", "description": "Text to click or type"},
-                "description": {"type": "STRING", "description": "Element description for smart_click/smart_type"},
-                "direction":   {"type": "STRING", "description": "up or down for scroll"},
-                "key":         {"type": "STRING", "description": "Key name for press action"},
-                "tab":         {"type": "INTEGER", "description": "1-based tab index for switch_tab"},
-                "incognito":   {"type": "BOOLEAN", "description": "Open in private/incognito mode"},
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "file_controller",
-        "description": (
-            "Manages files and folders: list, create, delete, move, copy, rename, read, write, find, disk usage, "
-            "and organizing a desktop or any folder into subfolders by type/date."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action":      {"type": "STRING", "description": "list | create_file | create_folder | delete | move | copy | rename | read | write | find | largest | disk_usage | organize_desktop | organize_folder | info"},
-                "path":        {"type": "STRING", "description": "File/folder path or shortcut: desktop, downloads, documents, home"},
-                "destination": {"type": "STRING", "description": "Destination path for move/copy"},
-                "new_name":    {"type": "STRING", "description": "New name for rename"},
-                "content":     {"type": "STRING", "description": "Content for create_file/write"},
-                "name":        {"type": "STRING", "description": "File name to search for"},
-                "extension":   {"type": "STRING", "description": "File extension to search (e.g. .pdf)"},
-                "count":       {"type": "INTEGER", "description": "Number of results for largest"},
-                "mode":        {"type": "STRING", "description": "by_type or by_date for organize actions"},
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "desktop_control",
-        "description": "Controls the desktop: wallpaper, organize, clean, list, stats.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {"type": "STRING", "description": "wallpaper | wallpaper_url | organize | clean | list | stats | task"},
-                "path":   {"type": "STRING", "description": "Image path for wallpaper"},
-                "url":    {"type": "STRING", "description": "Image URL for wallpaper_url"},
-                "mode":   {"type": "STRING", "description": "by_type or by_date for organize"},
-                "task":   {"type": "STRING", "description": "Natural language desktop task"},
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "agent_task",
-        "description": (
-            "Executes complex multi-step tasks requiring multiple different tools. "
-            "Examples: 'research X and save to file', 'find and organize files'. "
-            "DO NOT use for single commands. NEVER use for Steam/Epic — use game_updater."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "goal":     {"type": "STRING", "description": "Complete description of what to accomplish"},
-                "priority": {"type": "STRING", "description": "low | normal | high (default: normal)"}
-            },
-            "required": ["goal"]
-        }
-    },
-    {
-        "name": "computer_control",
-        "description": "Direct computer control: type, click, hotkeys, scroll, move mouse, screenshots, find elements on screen.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action":      {"type": "STRING", "description": "type | smart_type | click | double_click | right_click | hotkey | press | scroll | move | copy | paste | screenshot | wait | clear_field | focus_window | screen_find | screen_click | random_data | user_data"},
-                "text":        {"type": "STRING", "description": "Text to type or paste"},
-                "x":           {"type": "INTEGER", "description": "X coordinate"},
-                "y":           {"type": "INTEGER", "description": "Y coordinate"},
-                "keys":        {"type": "STRING", "description": "Key combination e.g. 'ctrl+c'"},
-                "key":         {"type": "STRING", "description": "Single key e.g. 'enter'"},
-                "direction":   {"type": "STRING", "description": "up | down | left | right"},
-                "amount":      {"type": "INTEGER", "description": "Scroll amount (default: 3)"},
-                "seconds":     {"type": "NUMBER",  "description": "Seconds to wait"},
-                "title":       {"type": "STRING",  "description": "Window title for focus_window"},
-                "description": {"type": "STRING",  "description": "Element description for screen_find/screen_click"},
-                "type":        {"type": "STRING",  "description": "Data type for random_data"},
-                "field":       {"type": "STRING",  "description": "Field for user_data: name|email|city"},
-                "clear_first": {"type": "BOOLEAN", "description": "Clear field before typing (default: true)"},
-                "path":        {"type": "STRING",  "description": "Save path for screenshot"},
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "game_updater",
-        "description": (
-            "THE ONLY tool for ANY Steam or Epic Games request. "
-            "Use for: installing, downloading, updating games, listing installed games, "
-            "checking download status, scheduling updates. "
-            "ALWAYS call directly for any Steam/Epic/game request. "
-            "NEVER use agent_task, browser_control, or web_search for Steam/Epic."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action":    {"type": "STRING",  "description": "update | install | list | download_status | schedule | cancel_schedule | schedule_status (default: update)"},
-                "platform":  {"type": "STRING",  "description": "steam | epic | both (default: both)"},
-                "game_name": {"type": "STRING",  "description": "Game name (partial match supported)"},
-                "app_id":    {"type": "STRING",  "description": "Steam AppID for install (optional)"},
-                "hour":      {"type": "INTEGER", "description": "Hour for scheduled update 0-23 (default: 3)"},
-                "minute":    {"type": "INTEGER", "description": "Minute for scheduled update 0-59 (default: 0)"},
-                "shutdown_when_done": {"type": "BOOLEAN", "description": "Shut down PC when download finishes"},
-            },
-            "required": []
-        }
-    },
-    {
-        "name": "flight_finder",
-        "description": "Searches Google Flights and speaks the best options.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "origin":      {"type": "STRING",  "description": "Departure city or airport code"},
-                "destination": {"type": "STRING",  "description": "Arrival city or airport code"},
-                "date":        {"type": "STRING",  "description": "Departure date (any format)"},
-                "return_date": {"type": "STRING",  "description": "Return date for round trips"},
-                "passengers":  {"type": "INTEGER", "description": "Number of passengers (default: 1)"},
-                "cabin":       {"type": "STRING",  "description": "economy | premium | business | first"},
-                "save":        {"type": "BOOLEAN", "description": "Save results to Notepad"},
-            },
-            "required": ["origin", "destination", "date"]
-        }
-    },
-    {
-        "name": "file_processor",
-        "description": (
-            "Processes any file that the user has uploaded or dropped onto the interface. "
-        "Use this when the user refers to an uploaded file and wants an action on it. "
-        "Supports: images (describe/ocr/resize/compress/convert), "
-        "PDFs (summarize/extract_text/to_word), "
-            "text files (summarize/fix/reformat/translate), "
-        "CSV/Excel (analyze/stats/filter/sort/convert), "
-        "JSON/XML (validate/format/analyze), "
-        "code files (explain/review/fix/optimize/run/document/test), "
-        "audio (transcribe/trim/convert/info), "
-        "video (trim/extract_audio/extract_frame/compress/transcribe/info), "
-        "archives (list/extract), "
-        "presentations (summarize/extract_text). "
-            "ALWAYS call this tool when a non-Word file has been uploaded and the user gives a command about it. "
-        "If the user's command is ambiguous, pick the most logical action for that file type."
-    ),
-    "parameters": {
-        "type": "OBJECT",
-        "properties": {
-            "file_path": {
-                "type": "STRING",
-                "description": "Full path to the uploaded file. Leave empty to use the currently uploaded file."
-            },
-            "action": {
-                "type": "STRING",
-                "description": (
-                    "What to do with the file. Examples by type:\n"
-                    "image: describe | ocr | resize | compress | convert | info\n"
-                    "pdf: summarize | extract_text | to_word | info\n"
-                    "docx via word_document; txt: summarize | fix | reformat | translate_hint | word_count | to_bullet\n"
-                    "csv/excel: analyze | stats | filter | sort | convert | info\n"
-                    "json: validate | format | analyze | to_csv\n"
-                    "code: explain | review | fix | optimize | run | document | test\n"
-                    "audio: transcribe | trim | convert | info\n"
-                    "video: trim | extract_audio | extract_frame | compress | transcribe | info | convert\n"
-                    "archive: list | extract\n"
-                    "pptx: summarize | extract_text | analyze"
-                )
-            },
-            "instruction": {
-                "type": "STRING",
-                "description": "Free-form instruction if action doesn't cover it. E.g. 'translate this to Turkish', 'find all email addresses'"
-            },
-            "format": {
-                "type": "STRING",
-                "description": "Target format for conversion. E.g. 'mp3', 'pdf', 'csv', 'png'"
-            },
-            "width":     {"type": "INTEGER", "description": "Target width for image resize"},
-            "height":    {"type": "INTEGER", "description": "Target height for image resize"},
-            "scale":     {"type": "NUMBER",  "description": "Scale factor for image resize (e.g. 0.5)"},
-            "quality":   {"type": "INTEGER", "description": "Quality 1-100 for image/video compress"},
-            "start":     {"type": "STRING",  "description": "Start time for trim: seconds or HH:MM:SS"},
-            "end":       {"type": "STRING",  "description": "End time for trim: seconds or HH:MM:SS"},
-            "timestamp": {"type": "STRING",  "description": "Timestamp for video frame extraction HH:MM:SS"},
-            "column":    {"type": "STRING",  "description": "Column name for CSV filter/sort"},
-            "value":     {"type": "STRING",  "description": "Filter value for CSV filter"},
-            "condition": {"type": "STRING",  "description": "Filter condition: equals|contains|gt|lt"},
-            "ascending": {"type": "BOOLEAN", "description": "Sort order for CSV sort (default: true)"},
-            "save":      {"type": "BOOLEAN", "description": "Save result to file (default: true)"},
-            "destination": {"type": "STRING", "description": "Output folder for archive extract"},
-        },
-        "required": []
-        }
-    },
-    {
-        "name": "presentation_builder",
-        "description": (
-            "Creates editable PowerPoint presentations (.pptx) from a structured slide outline. "
-            "Almighty automatically infers the best visual style from the topic, searches for a matching online template when available, "
-            "reuses cached templates, and falls back to the built-in designer if no suitable template is found. "
-            "Use when the user asks for a deck, slideshow, presentation, pitch deck, or report slides."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "title": {"type": "STRING", "description": "Presentation title"},
-                "subtitle": {"type": "STRING", "description": "Optional subtitle or audience line"},
-                "theme": {
-                    "type": "STRING",
-                    "description": "Optional presentation theme or visual direction such as neon, corporate, luxury, academic, sunset, or creative. If omitted, Almighty infers the best style automatically."
-                },
-                "outline": {
-                    "type": "STRING",
-                    "description": "Slide-by-slide outline. Use blank lines to separate slides if slides array is omitted."
-                },
-                "slides": {
-                    "type": "ARRAY",
-                    "items": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "title": {"type": "STRING", "description": "Slide title"},
-                            "kicker": {"type": "STRING", "description": "Short all-caps kicker"},
-                            "bullets": {
-                                "type": "ARRAY",
-                                "items": {"type": "STRING"},
-                                "description": "Bullet points for the slide"
-                            },
-                            "notes": {"type": "STRING", "description": "Optional speaker note or footnote"}
-                        },
-                        "required": ["title"]
-                    },
-                    "description": "Structured slides. Preferred when the model can format the deck directly."
-                },
-                "output_path": {"type": "STRING", "description": "Optional output path for the .pptx"},
-                "auto_open": {"type": "BOOLEAN", "description": "Open the file after creating it (default: true)"},
-            },
-            "required": ["title"]
-        }
-    },
-    {
-        "name": "spreadsheet_builder",
-        "description": (
-            "Creates editable Excel workbooks (.xlsx) from structured sheet data. "
-            "Use for trackers, tables, analysis workbooks, budgets, planners, and other spreadsheet requests."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "title": {"type": "STRING", "description": "Workbook title"},
-                "worksheets": {
-                    "type": "ARRAY",
-                    "items": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "name": {"type": "STRING", "description": "Worksheet name"},
-                            "title": {"type": "STRING", "description": "Optional sheet title row"},
-                            "headers": {
-                                "type": "ARRAY",
-                                "items": {"type": "STRING"},
-                                "description": "Column headers"
-                            },
-                            "rows": {
-                                "type": "ARRAY",
-                                "items": {
-                                    "type": "ARRAY",
-                                    "items": {"type": "STRING"},
-                                },
-                                "description": "Data rows"
-                            },
-                            "chart": {
-                                "type": "OBJECT",
-                                "properties": {
-                                    "type": {"type": "STRING", "description": "bar | line | pie"},
-                                    "title": {"type": "STRING", "description": "Chart title"},
-                                    "anchor": {"type": "STRING", "description": "Cell anchor such as E2"},
-                                    "x_axis": {"type": "STRING", "description": "Optional x-axis title"},
-                                    "y_axis": {"type": "STRING", "description": "Optional y-axis title"},
-                                }
-                            }
-                        },
-                        "required": ["name"]
-                    },
-                    "description": "One or more worksheets to create."
-                },
-                "output_path": {"type": "STRING", "description": "Optional output path for the .xlsx"},
-                "auto_open": {"type": "BOOLEAN", "description": "Open the file after creating it (default: true)"},
-            },
-            "required": ["title"]
-        }
-    },
-    {
-        "name": "word_document",
-        "description": (
-            "Creates, edits, reads, summarizes, extracts text from, and opens editable Word documents (.docx). "
-            "Use for Word document requests, letters, reports, headings, bullets, formatting edits, and preserving existing formatting."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {
-                    "type": "STRING",
-                    "description": "create | create_letter | create_report | read | summarize | extract_text | append | replace_text | add_heading | add_bullets | reformat | open"
-                },
-                "file_path": {"type": "STRING", "description": "Existing .docx file path for read/edit/open actions"},
-                "output_path": {"type": "STRING", "description": "Optional output path for the saved .docx"},
-                "title": {"type": "STRING", "description": "Document title"},
-                "doc_type": {"type": "STRING", "description": "letter | report | generic"},
-                "content": {"type": "STRING", "description": "Main body content or text to append"},
-                "body": {"type": "STRING", "description": "Body text for letter/report creation"},
-                "paragraphs": {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Paragraphs to add"},
-                "bullets": {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Bullet items to add"},
-                "numbered": {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Numbered items to add"},
-                "sections": {"type": "ARRAY", "items": {"type": "OBJECT"}, "description": "Structured sections with heading/body/bullets"},
-                "replacements": {"type": "OBJECT", "description": "Find/replace mapping for formatting-preserving edits"},
-                "find": {"type": "STRING", "description": "Text to find for simple replace_text edits"},
-                "replace": {"type": "STRING", "description": "Replacement text for simple replace_text edits"},
-                "heading": {"type": "STRING", "description": "Heading text to append"},
-                "level": {"type": "INTEGER", "description": "Heading level 1-3"},
-                "recipient": {"type": "STRING", "description": "Letter recipient"},
-                "salutation": {"type": "STRING", "description": "Custom letter salutation"},
-                "closing": {"type": "STRING", "description": "Custom letter closing"},
-                "date": {"type": "STRING", "description": "Letter date"},
-                "author": {"type": "STRING", "description": "Document author"},
-                "subject": {"type": "STRING", "description": "Document subject"},
-                "open_after": {"type": "BOOLEAN", "description": "Open the saved document after writing (default: true)"},
-                "save": {"type": "BOOLEAN", "description": "Save large generated summaries to a text file"},
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "pdf_document",
-        "description": (
-            "Creates editable-style PDF documents (.pdf) from structured content or converts DOCX / text files into PDFs. "
-            "Use for PDF creation, PDF exports, and PDF generation requests that need a direct file output."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {
-                    "type": "STRING",
-                    "description": "create | create_report | create_letter | convert"
-                },
-                "file_path": {"type": "STRING", "description": "Existing file to convert, typically .docx or .txt"},
-                "output_path": {"type": "STRING", "description": "Optional output path for the saved .pdf"},
-                "title": {"type": "STRING", "description": "PDF title"},
-                "subtitle": {"type": "STRING", "description": "Optional subtitle"},
-                "content": {"type": "STRING", "description": "Main body content"},
-                "body": {"type": "STRING", "description": "Main body content"},
-                "paragraphs": {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Paragraphs to add"},
-                "bullets": {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Bullet items to add"},
-                "numbered": {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Numbered items to add"},
-                "sections": {"type": "ARRAY", "items": {"type": "OBJECT"}, "description": "Structured sections with heading/body/bullets"},
-                "recipient": {"type": "STRING", "description": "Letter recipient"},
-                "salutation": {"type": "STRING", "description": "Custom letter salutation"},
-                "closing": {"type": "STRING", "description": "Custom letter closing"},
-                "date": {"type": "STRING", "description": "Letter date"},
-                "author": {"type": "STRING", "description": "Document author"},
-                "subject": {"type": "STRING", "description": "Document subject"},
-                "auto_open": {"type": "BOOLEAN", "description": "Open the file after creating it (default: true)"},
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "shutdown_almighty",
-        "description": (
-            "Shuts down the assistant completely. "
-        "Call this when the user expresses intent to end the conversation, "
-        "close the assistant, say goodbye, or stop Almighty AI. "
-        "The user can say this in ANY language."
-    ),
-    "parameters": {
-        "type": "OBJECT",
-        "properties": {},
-    }
-    },
-    {
-        "name": "save_memory",
-        "description": (
-            "Save an important personal fact about the user to long-term memory. "
-            "Call this silently whenever the user reveals something worth remembering: "
-            "name, age, city, job, preferences, hobbies, relationships, projects, or future plans. "
-            "Do NOT call for: weather, reminders, searches, or one-time commands. "
-            "Do NOT announce that you are saving — just call it silently. "
-            "Values must be in English regardless of the conversation language."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "category": {
-                    "type": "STRING",
-                    "description": (
-                        "identity — name, age, birthday, city, job, language, nationality | "
-                        "preferences — favorite food/color/music/film/game/sport, hobbies | "
-                        "projects — active projects, goals, things being built | "
-                        "relationships — friends, family, partner, colleagues | "
-                        "wishes — future plans, things to buy, travel dreams | "
-                        "notes — habits, schedule, anything else worth remembering"
-                    )
-                },
-                "key":   {"type": "STRING", "description": "Short snake_case key (e.g. name, favorite_food, sister_name)"},
-                "value": {"type": "STRING", "description": "Concise value in English (e.g. Fatih, pizza, older sister)"},
-            },
-            "required": ["category", "key", "value"]
-        }
-    },
-]
+# Register all actions with the central dispatcher
+register_all_actions()
+TOOL_DECLARATIONS = dispatcher.get_declarations()
 
 
-def _mcp_tool_declarations() -> list:
-    """Convert connected MCP tools into Gemini function declarations.
 
-    Best-effort JSON-Schema -> Gemini-type mapping; unknown types default to
-    STRING. Empty when no MCP server is configured or the SDK is missing.
-    """
-    try:
-        tools = get_mcp_manager().list_tools()
-    except Exception:
-        return []
-    if not tools:
-        return []
+class RexLive:
 
-    type_map = {"string": "STRING", "number": "NUMBER", "integer": "INTEGER",
-                "boolean": "BOOLEAN", "array": "ARRAY", "object": "OBJECT"}
-    declarations = []
-    for t in tools:
-        schema = t.get("inputSchema") or {}
-        properties = {}
-        for pname, pschema in (schema.get("properties") or {}).items():
-            ptype = type_map.get(str(pschema.get("type", "string")).lower(), "STRING")
-            prop = {"type": ptype}
-            if pschema.get("description"):
-                prop["description"] = pschema["description"]
-            if ptype == "ARRAY" and isinstance(pschema.get("items"), dict):
-                prop["items"] = {"type": type_map.get(
-                    str(pschema["items"].get("type", "string")).lower(), "STRING")}
-            properties[pname] = prop
-        required = [k for k in (schema.get("required") or []) if k in properties]
-        declarations.append({
-            "name": t["name"],
-            "description": t.get("description") or f"MCP tool from {t.get('server', 'MCP')}",
-            "parameters": {"type": "OBJECT", "properties": properties, "required": required},
-        })
-    return declarations
-
-
-def _mcp_list_text() -> str:
-    """Formatted list of connected MCP tools (starts servers on first use)."""
-    tools = get_mcp_manager().list_tools()
-    if not tools:
-        return "No MCP tools available. Add servers to config/mcp_servers.json."
-    return "\n".join(f"- {t['name']}: {t.get('description') or ''}" for t in tools)
-
-
-# Skill tools are only exposed to the live model when at least one skill is
-# installed (see _build_config), so an empty skills/ folder costs the model
-# zero extra tool round-trips.
-SKILL_TOOL_DECLARATIONS = [
-    {
-        "name": "list_skills",
-        "description": (
-            "Lists all installed skills (learned instruction sets) as name + description. "
-            "Call this when a task might match a known skill before executing it."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {},
-        }
-    },
-    {
-        "name": "load_skill",
-        "description": (
-            "Loads the full markdown instructions of an installed skill by name. "
-            "Use list_skills first to find the right name, then load it when the task matches "
-            "and follow its instructions using the other tools."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "name": {"type": "STRING", "description": "Exact skill name from list_skills"}
-            },
-            "required": ["name"]
-        }
-    },
-]
-
-
-class AlmightyLive:
-
-    def __init__(self, ui: AlmightyUI, dashboard=None, dashboard_started: bool = False, enable_dashboard: bool = True):
+    def __init__(self, ui: REXUI, dashboard=None, dashboard_started: bool = False, enable_dashboard: bool = True):
         self.ui             = ui
         self._smart_home    = SmartHomeService()
         self.session        = None
@@ -1098,11 +502,6 @@ class AlmightyLive:
         self.ui.on_text_command = self._on_text_command
         self.ui.on_attention_action = self._on_attention_action
         self.ui.on_remote_clicked = self._make_remote_key
-        # On-device wake word (Vosk).  Optional: degrades to the existing
-        # cloud wake-word standby if the model/vosk are unavailable.
-        self._wakeword = None
-        self.ui.on_wakeword_config_changed = self._apply_wakeword_settings
-        self._init_wakeword()
         self._last_activity = time.monotonic()
         self._idle_prompts = [
             "Hey, you there?",
@@ -1116,60 +515,6 @@ class AlmightyLive:
 
     def _reset_idle_activity(self):
         self._last_activity = time.monotonic()
-
-    def _init_wakeword(self):
-        """Create the on-device 'Hey Rex' listener if vosk + model are available.
-
-        Non-fatal: missing vosk/model just leaves ``self._wakeword`` as None and
-        the app falls back to the existing cloud wake-word standby.
-        """
-        try:
-            from wake_word import WakeWordListener
-
-            model_dir = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                "config", "models", "vosk-model-small-en-us-0.15",
-            )
-            self._wakeword = WakeWordListener(
-                model_dir=model_dir,
-                on_trigger=self._on_wakeword_triggered,
-            )
-            self._apply_wakeword_settings()
-        except Exception as exc:
-            self._wakeword = None
-            print(f"[ALMIGHTY] Wake word unavailable: {exc}")
-
-    def _wakeword_settings(self) -> dict:
-        """Read wake-word settings from app_settings (safe on stub UIs)."""
-        try:
-            if hasattr(self.ui, "_load_app_settings"):
-                return self.ui._load_app_settings()
-        except Exception:
-            pass
-        return {}
-
-    def _apply_wakeword_settings(self):
-        """Push settings (enable + sensitivity) to the listener, or disarm it."""
-        w = getattr(self, "_wakeword", None)
-        if w is None:
-            return
-        settings = self._wakeword_settings()
-        w.set_sensitivity(float(settings.get("wake_word_sensitivity", 0.5)))
-        if bool(settings.get("wake_word_enabled", True)):
-            w.set_enabled(True)
-            print("[ALMIGHTY] 🎙 Wake word 'Hey Rex' armed (on-device Vosk)")
-        else:
-            w.set_enabled(False)
-            print("[ALMIGHTY] Wake word disabled in settings")
-
-    def _on_wakeword_triggered(self):
-        """Wake word heard while muted -> unmute the mic + log it."""
-        try:
-            if self.ui.muted:
-                self.ui.set_muted_state(False, wakeword=True)
-                self.ui.write_log("SYS: 'Hey Rex' detected — microphone active.")
-        except Exception as exc:
-            print(f"[ALMIGHTY] wake word trigger error: {exc}")
 
     def _should_announce_idle(self) -> bool:
         if self.ui.muted:
@@ -1193,27 +538,23 @@ class AlmightyLive:
                     self.ui.write_log(f"SYS: {message}")
                     threading.Thread(target=speak_native, args=(message,), daemon=True).start()
                     self._reset_idle_activity()
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="main._idle_speech_loop", severity="warning")
 
     def _make_remote_key(self):
         if self._dashboard is None:
             self.ui.write_log("ERR: Mobile Connect unavailable. Install fastapi, uvicorn, cryptography, and qrcode[pil].")
             return None
-        url, key, auto, manual, warning = self._dashboard.new_pairing()
-        if warning:
-            print(f"[Dashboard] \u26a0\ufe0f {warning}")
-            try:
-                self.ui.write_log(f"WARN: {warning}")
-            except Exception:
-                pass
-        return url, key, auto, manual, warning
+        key = self._dashboard.new_key()
+        url = self._dashboard.get_url()
+        manual = self._dashboard.get_manual_url()
+        return url, key, f"{url}/auto-login?key={key}", manual
 
     def _on_phone_connected(self):
         try:
             self.ui.notify_phone_connected()
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="main._on_phone_connected", severity="warning")
 
     def _on_text_command(self, text: str, source: str = "local"):
         self._reset_idle_activity()
@@ -1222,8 +563,8 @@ class AlmightyLive:
             return
         try:
             stop_native_speech()
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="main._on_text_command", severity="warning")
         # allow plugins to handle the incoming text command first
         try:
             pm = getattr(self, "plugin_manager", None)
@@ -1231,8 +572,8 @@ class AlmightyLive:
                 handled = pm.dispatch("on_text_command", text, source)
                 if handled:
                     return
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="main._on_text_command", severity="warning")
         if self._reply_mode:
             if self._handle_pending_reply(text):
                 return
@@ -1245,10 +586,15 @@ class AlmightyLive:
             devices = self._smart_home.list_devices()
             routed_text_home = sd_mgr.route_command(text, devices)
             if routed_text_home != text:
-                print(f"[ALMIGHTY] Redirection: '{text}' -> '{routed_text_home}'")
+                print(f"[REX] Redirection: '{text}' -> '{routed_text_home}'")
                 text = routed_text_home
         except Exception as e:
-            print(f"[ALMIGHTY] Redirection error: {e}")
+            print(f"[REX] Redirection error: {e}")
+
+        # Dispatch shortcut first: the website-request matcher below would otherwise
+        # hijack "open the dispatch app" (it matches the word "app").
+        if self._handle_dispatch_command(text, source=source or "local"):
+            return
 
         developer_settings = self.ui._load_app_settings() if hasattr(self.ui, "_load_app_settings") else {}
         developer_enabled = bool(developer_settings.get("developer_mode_enabled", False))
@@ -1291,19 +637,19 @@ class AlmightyLive:
             return
         try:
             self.ui.begin_task_workspace(text, _build_task_plan(text), source=source or "local")
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="main._on_text_command", severity="warning")
         if self._handle_smart_home_command(text, source=source or "local"):
             return
         if _looks_like_screen_request(text):
             try:
                 self.ui.update_task_workspace(
                     status="Scanning screen",
-                    output="Almighty is inspecting the screen for what you asked about.",
+                    output="REX is inspecting the screen for what you asked about.",
                     percent=40,
                 )
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="main._on_text_command", severity="warning")
             threading.Thread(
                 target=screen_process,
                 kwargs={
@@ -1352,7 +698,7 @@ class AlmightyLive:
                 percent=100,
                 source=source,
             )
-            self.ui.write_log(f"Rex: {detail}")
+            self.ui.write_log(f"REX: {detail}")
             self.speak(detail)
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
@@ -1376,6 +722,71 @@ class AlmightyLive:
             self.speak(message)
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
+            return True
+
+    def _handle_dispatch_command(self, text: str, source: str = "local") -> bool:
+        """Voice/typing shortcut: "open dispatch" / "start my route".
+
+        Opens the Garden Goats Dispatch PWA in the browser and announces
+        today's due jobs from the server-synced state file.
+        """
+        normalized = re.sub(r"\s+", " ", text.lower()).strip()
+        triggers = (
+            "open dispatch", "launch dispatch", "start my route",
+            "start the route", "open the dispatch", "show dispatch",
+            "dispatch app", "go to dispatch", "garden goats",
+        )
+        if not any(t in normalized for t in triggers):
+            return False
+        try:
+            import webbrowser
+            # Reuse the dashboard's LAN URL so the browser hits the same origin
+            # (phone and desktop both get the PIN gate + sync endpoints).
+            url = "http://localhost:8000/dispatch"
+            if getattr(self, "_dashboard", None) is not None:
+                try:
+                    url = self._dashboard.get_url() + "/dispatch"
+                except Exception:
+                    pass
+            webbrowser.open(url)
+
+            # Read the synced dispatch state (REX data/dispatch_state.json) and
+            # announce anything due today.
+            due = []
+            try:
+                from dashboard.server import DISPATCH_STATE_FILE
+                if DISPATCH_STATE_FILE.exists():
+                    state = json.loads(DISPATCH_STATE_FILE.read_text(encoding="utf-8"))
+                    due = _dispatch_due_jobs(state)
+            except Exception as _e:
+                log_error(_e, context="main._handle_dispatch_command", severity="warning")
+
+            if due:
+                names = ", ".join(
+                    (j.get("address") or "a property") for j in due[:4]
+                )
+                more = f" and {len(due) - 4} more" if len(due) > 4 else ""
+                message = f"Opening the dispatch app. You have {len(due)} job{'s' if len(due) != 1 else ''} due today: {names}{more}."
+            else:
+                message = "Opening the dispatch app. No jobs are due today."
+
+            self.ui.write_log(f"SYS: {message}")
+            self.ui.update_task_workspace(
+                title="Dispatch",
+                command=text,
+                plan=["Open the dispatch app", "Check today's due jobs", "Build the route"],
+                status="Opening dispatch",
+                output=message,
+                percent=100,
+                source=source,
+            )
+            self.speak(message)
+            if not self.ui.muted:
+                self.ui.set_state("LISTENING")
+            return True
+        except Exception as exc:
+            self.ui.write_log(f"ERR: Could not open dispatch: {exc}")
+            self.speak(f"I couldn't open the dispatch app: {exc}")
             return True
 
     def _attention_message(self, event: dict) -> str:
@@ -1461,7 +872,7 @@ class AlmightyLive:
         if summary:
             self.ui.write_log(f"[Meeting] {summary}")
         if answer:
-            self.ui.write_log(f"Rex: {answer}")
+            self.ui.write_log(f"REX: {answer}")
 
     def _on_meeting_state(self, state: str):
         if state == "LISTENING":
@@ -1499,8 +910,8 @@ class AlmightyLive:
                 output="Type the message you want to send, and I will make it sound natural before sending it as you.",
                 percent=10,
             )
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="main._prompt_message_reply", severity="warning")
         return True
 
     def _handle_pending_reply(self, text: str) -> bool:
@@ -1516,8 +927,8 @@ class AlmightyLive:
             self.ui.write_log("SYS: Reply cancelled.")
             try:
                 self.ui.finish_task_workspace("Reply cancelled.", "Cancelled", 100)
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="main._handle_pending_reply", severity="warning")
             return True
 
         self.ui.write_log(f"SYS: Drafting reply to {event.get('title') or event.get('app')}.")
@@ -1565,8 +976,8 @@ class AlmightyLive:
                 self.ui.write_log("ERR: Could not determine recipient for reply.")
                 try:
                     self.ui.finish_task_workspace("Reply failed: recipient not found.", "Reply failed", 100)
-                except Exception:
-                    pass
+                except Exception as _e:
+                    log_error(_e, context="main._draft_and_send_reply", severity="warning")
                 return
             result = send_message(
                 parameters={
@@ -1580,15 +991,15 @@ class AlmightyLive:
             self.ui.write_log(f"SYS: {result}")
             try:
                 self.ui.finish_task_workspace(reply_text, "Reply delivered.", 100)
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="main._draft_and_send_reply", severity="warning")
         except Exception as e:
             self._reply_mode = False
             self.ui.write_log(f"ERR: Reply failed: {e}")
             try:
                 self.ui.finish_task_workspace(f"Reply failed: {e}", "Reply failed", 100)
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="main._draft_and_send_reply", severity="warning")
         finally:
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
@@ -1607,7 +1018,7 @@ class AlmightyLive:
                 return self._prompt_message_reply(event)
             if self._attention_matches(lower, ("hear", "read", "what is it", "tell me", "show it", "open it")):
                 preview = read_event_preview(event)
-                self.ui.write_log(f"Rex: {preview}")
+                self.ui.write_log(f"REX: {preview}")
                 threading.Thread(target=speak_native, args=(preview,), daemon=True).start()
                 with self._attention_lock:
                     self._pending_attention = None
@@ -1657,7 +1068,7 @@ class AlmightyLive:
         if kind == "message":
             if decision == "hear":
                 preview = read_event_preview(event)
-                self.ui.write_log(f"Rex: {preview}")
+                self.ui.write_log(f"REX: {preview}")
                 threading.Thread(target=speak_native, args=(preview,), daemon=True).start()
             elif decision == "reply":
                 self._prompt_message_reply(event)
@@ -1689,11 +1100,11 @@ class AlmightyLive:
             try:
                 self.ui.update_task_workspace(
                     status="Thinking",
-                    output="Almighty is drafting a direct reply.",
+                    output="REX is drafting a direct reply.",
                     percent=35,
                 )
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="main._fallback_reply", severity="warning")
             reply = ""
             gemini_first = not self._use_openrouter_first
             request_text = f"{memory_ctx}\n\nCurrent User Request:\n{text}" if memory_ctx else text
@@ -1702,7 +1113,7 @@ class AlmightyLive:
                 try:
                     reply = _gemini_text_reply(request_text)
                 except Exception as e:
-                    print(f"[ALMIGHTY] ⚠️ Gemini fallback failed: {e}")
+                    print(f"[REX] ⚠️ Gemini fallback failed: {e}")
                     if _is_gemini_limit_error(e):
                         self._use_openrouter_first = True
 
@@ -1711,32 +1122,32 @@ class AlmightyLive:
                     reply = openrouter_client.chat(
                         request_text,
                         system=(
-                            "You are Rex, a concise, helpful desktop assistant for Almighty AI. "
+                            "You are REX, a concise, helpful desktop assistant. "
                             "Reply naturally and briefly. Do not mention internal implementation details."
                         ),
                     )
                 except Exception as e:
-                    print(f"[ALMIGHTY] ⚠️ OpenRouter fallback failed: {e}")
+                    print(f"[REX] ⚠️ OpenRouter fallback failed: {e}")
                     if gemini_first and not self._use_openrouter_first and _is_gemini_limit_error(e):
                         self._use_openrouter_first = True
             reply = (reply or "").strip()
             if not reply:
                 reply = "I’m ready, sir."
-            self.ui.write_log(f"Rex: {reply}")
+            self.ui.write_log(f"REX: {reply}")
             try:
                 self.ui.finish_task_workspace(reply, "Reply delivered.", 100)
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="main._fallback_reply", severity="warning")
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
         except Exception as e:
             msg = f"Fallback reply failed: {e}"
-            print(f"[ALMIGHTY] ⚠️ {msg}")
+            print(f"[REX] ⚠️ {msg}")
             self.ui.write_log(f"ERR: {msg}")
             try:
                 self.ui.finish_task_workspace(msg, "Reply failed.", 100)
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="main._fallback_reply", severity="warning")
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
 
@@ -1764,30 +1175,6 @@ class AlmightyLive:
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"Sir, {tool_name} encountered an error. {short}")
 
-    def _tool_declarations(self) -> list:
-        """Live-chat function declarations; skill + MCP tools only for Pro."""
-        declarations = list(TOOL_DECLARATIONS)
-        try:
-            from config.profile import is_pro
-            if not is_pro():
-                return declarations  # skills + MCP servers are Pro-gated
-            if get_skill_manager().list_skills():
-                declarations.extend(SKILL_TOOL_DECLARATIONS)
-            mcp_decls = _mcp_tool_declarations()
-            if mcp_decls:
-                declarations.append({
-                    "name": "mcp_list",
-                    "description": (
-                        "Lists all tools available from connected MCP servers "
-                        "(name + description). Call before using an MCP tool."
-                    ),
-                    "parameters": {"type": "OBJECT", "properties": {}},
-                })
-                declarations.extend(mcp_decls)
-        except Exception:
-            pass
-        return declarations
-
     def _build_config(self) -> types.LiveConnectConfig:
         from datetime import datetime
 
@@ -1807,28 +1194,8 @@ class AlmightyLive:
         if mem_str:
             parts.append(mem_str)
         parts.append(sys_prompt)
-        try:
-            from config.profile import is_pro
-            if is_pro():
-                skills = get_skill_manager().list_skills()
-                if skills:
-                    catalog = "\n".join(f"- {s['name']}: {s['description']}" for s in skills)
-                    parts.append(
-                        "Installed skills — call list_skills to list them or load_skill "
-                        "(name: string) to read a skill's instructions when the task matches:\n"
-                        + catalog
-                    )
-                mcp_decls = _mcp_tool_declarations()
-                if mcp_decls:
-                    parts.append(
-                        "Connected MCP tools — call them by name like any other tool "
-                        "(or mcp_list to list them):\n"
-                        + ", ".join(d["name"] for d in mcp_decls)
-                    )
-        except Exception:
-            pass
         parts.append(
-            "Wake-word mode: if the microphone is muted, still listen for the words 'Almighty', 'hey', 'hi', and 'hello'. "
+            "Wake-word mode: if the microphone is muted, still listen for the words 'REX', 'hey', 'hi', and 'hello'. "
             "When you hear one of these activation cues, keep the session friendly and concise, "
             "and wait for the user's next command."
         )
@@ -1838,7 +1205,7 @@ class AlmightyLive:
             output_audio_transcription={},
             input_audio_transcription={},
             system_instruction="\n".join(parts),
-            tools=[{"function_declarations": self._tool_declarations()}],
+            tools=[{"function_declarations": TOOL_DECLARATIONS}],
             session_resumption=types.SessionResumptionConfig(),
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
@@ -1853,7 +1220,7 @@ class AlmightyLive:
         name = fc.name
         args = dict(fc.args or {})
 
-        print(f"[ALMIGHTY] 🔧 {name}  {args}")
+        print(f"[REX] 🔧 {name}  {args}")
         self.ui.set_state("THINKING")
         try:
             self.ui.update_task_workspace(
@@ -1862,8 +1229,8 @@ class AlmightyLive:
                 output="Waiting for the tool to finish.",
                 percent=45,
             )
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="main._execute_tool", severity="warning")
         if name == "save_memory":
             category = args.get("category", "notes")
             key      = args.get("key", "")
@@ -1873,8 +1240,8 @@ class AlmightyLive:
                 print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
                 try:
                     self.ui.finish_task_workspace("Memory saved.", "Memory updated.", 100)
-                except Exception:
-                    pass
+                except Exception as _e:
+                    log_error(_e, context="main._execute_tool", severity="warning")
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
             return types.FunctionResponse(
@@ -1886,162 +1253,16 @@ class AlmightyLive:
         result = "Done."
 
         try:
-            from config.profile import PRO_LOCKED_MESSAGE, is_pro
-            pro = is_pro()
-            if not pro and name in {"list_skills", "load_skill", "mcp_list"}:
-                result = PRO_LOCKED_MESSAGE
-            elif name == "list_skills":
-                skills = get_skill_manager().list_skills()
-                result = ("\n".join(f"- {s['name']}: {s['description']}" for s in skills)
-                          if skills else "No skills installed.")
+            pm = getattr(self, "plugin_manager", None)
+            result = await dispatcher.dispatch(
+                name, args,
+                ui=self.ui,
+                speak=self.speak,
+                loop=loop,
+                smart_home_service=self._smart_home,
+                plugin_registry=pm,
+            )
 
-            elif name == "load_skill":
-                skill_name = str(args.get("name") or "").strip()
-                if not skill_name:
-                    result = "load_skill requires a 'name' parameter."
-                else:
-                    content = get_skill_manager().load_skill(skill_name)
-                    if content is None:
-                        result = f"Skill '{skill_name}' not found. Use list_skills to see available skills."
-                    else:
-                        if len(content) > 40_000:
-                            content = content[:40_000] + "\n\n[...skill truncated for length...]"
-                        result = content
-
-            elif name == "mcp_list":
-                # MCP discovery/calls can spawn processes and block for up to
-                # CALL_TIMEOUT_S — never block the live-session loop on them.
-                result = await loop.run_in_executor(None, _mcp_list_text)
-
-            elif pro and await loop.run_in_executor(None, lambda: get_mcp_manager().has_tool(name)):
-                result = await loop.run_in_executor(
-                    None, lambda: get_mcp_manager().call_tool(name, args))
-
-            elif name == "open_app":
-                r = await loop.run_in_executor(None, lambda: open_app(parameters=args, response=None, player=self.ui))
-                result = r or f"Opened {args.get('app_name')}."
-
-            elif name == "weather_report":
-                r = await loop.run_in_executor(None, lambda: weather_action(parameters=args, player=self.ui))
-                result = r or "Weather delivered."
-
-            elif name == "browser_control":
-                r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "file_controller":
-                r = await loop.run_in_executor(None, lambda: file_controller(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "send_message":
-                r = await loop.run_in_executor(None, lambda: send_message(parameters=args, response=None, player=self.ui, session_memory=None))
-                result = r or f"Message sent to {args.get('receiver')}."
-
-            elif name == "reminder":
-                r = await loop.run_in_executor(None, lambda: reminder(parameters=args, response=None, player=self.ui))
-                result = r or "Reminder set."
-
-            elif name == "youtube_video":
-                r = await loop.run_in_executor(None, lambda: youtube_video(parameters=args, response=None, player=self.ui))
-                result = r or "Done."
-            elif name == "file_processor":
-                if not args.get("file_path") and self.ui.current_file:
-                    args["file_path"] = self.ui.current_file
-                r = await loop.run_in_executor(
-                    None,
-                    lambda: file_processor(parameters=args, player=self.ui, speak=self.speak)
-                )
-                result = r or "Done."
-
-            elif name == "presentation_builder":
-                r = await loop.run_in_executor(
-                    None,
-                    lambda: create_presentation(parameters=args, player=self.ui)
-                )
-                result = r or "Presentation created."
-
-            elif name == "spreadsheet_builder":
-                r = await loop.run_in_executor(
-                    None,
-                    lambda: create_spreadsheet(parameters=args, player=self.ui)
-                )
-                result = r or "Spreadsheet created."
-
-
-            elif name == "word_document":
-                if not args.get("file_path") and self.ui.current_file:
-                    current_file = Path(self.ui.current_file)
-                    if current_file.suffix.lower() == ".docx":
-                        args["file_path"] = self.ui.current_file
-                r = await loop.run_in_executor(
-                    None,
-                    lambda: word_document(parameters=args, player=self.ui, speak=self.speak)
-                )
-                result = r or "Word document handled."
-
-            elif name == "pdf_document":
-                r = await loop.run_in_executor(
-                    None,
-                    lambda: create_pdf(parameters=args, player=self.ui)
-                )
-                result = r or "PDF created."
-
-            elif name == "screen_process":
-                threading.Thread(
-                    target=screen_process,
-                    kwargs={"parameters": args, "response": None,
-                            "player": self.ui, "session_memory": None},
-                    daemon=True
-                ).start()
-                result = "Vision module activated. Stay completely silent — vision module will speak directly."
-
-            elif name == "computer_settings":
-                r = await loop.run_in_executor(None, lambda: computer_settings(parameters=args, response=None, player=self.ui))
-                result = r or "Done."
-
-            elif name == "smart_home_control":
-                command_text = str(args.get("command") or "").strip()
-                r = await loop.run_in_executor(None, lambda: self._smart_home.execute_command(command_text))
-                result = str((r or {}).get("detail") or "Smart-home command completed.")
-
-            elif name == "desktop_control":
-                r = await loop.run_in_executor(None, lambda: desktop_control(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "agent_task":
-                from agent.task_queue import get_queue, TaskPriority
-                priority_map = {"low": TaskPriority.LOW, "normal": TaskPriority.NORMAL, "high": TaskPriority.HIGH}
-                priority = priority_map.get(args.get("priority", "normal").lower(), TaskPriority.NORMAL)
-                task_id  = get_queue().submit(goal=args.get("goal", ""), priority=priority, speak=self.speak)
-                result   = f"Task started (ID: {task_id})."
-
-            elif name == "web_search":
-                r = await loop.run_in_executor(None, lambda: web_search_action(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "computer_control":
-                r = await loop.run_in_executor(None, lambda: computer_control(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "game_updater":
-                r = await loop.run_in_executor(None, lambda: game_updater(parameters=args, player=self.ui, speak=self.speak))
-                result = r or "Done."
-
-            elif name == "flight_finder":
-                r = await loop.run_in_executor(None, lambda: flight_finder(parameters=args, player=self.ui))
-                result = r or "Done."
-            elif name == "shutdown_almighty":
-                self.ui.write_log("SYS: Shutdown requested.")
-                self.speak("Goodbye, sir.")
-
-                def _shutdown():
-                    import time, sys, os
-                    time.sleep(1)
-                    os._exit(0)
-
-                threading.Thread(target=_shutdown, daemon=True).start()
-            else:
-                result = f"Unknown tool: {name}"
 
         except Exception as e:
             result = f"Tool '{name}' failed: {e}"
@@ -2050,13 +1271,13 @@ class AlmightyLive:
 
         try:
             self.ui.finish_task_workspace(result, "Task completed.", 100)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="main._execute_tool", severity="warning")
 
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
-        print(f"[ALMIGHTY] 📤 {name} → {str(result)[:80]}")
+        print(f"[REX] 📤 {name} → {str(result)[:80]}")
 
         return types.FunctionResponse(
             id=fc.id, name=name,
@@ -2107,23 +1328,15 @@ class AlmightyLive:
             await self.session.send_realtime_input(media=msg)
 
     async def _listen_audio(self):
-        print("[ALMIGHTY] 🎤 Mic started")
+        print("[REX] 🎤 Mic started")
         loop = asyncio.get_event_loop()
 
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
-                almighty_speaking = self._is_speaking
+                rex_speaking = self._is_speaking
             if self._phone_active:
                 return
-            if almighty_speaking:
-                return
-            wakeword = getattr(self, "_wakeword", None)
-            if self.ui.muted and wakeword is not None and wakeword.enabled:
-                # TRUE privacy mute: audio never leaves the machine; only the
-                # local Vosk detector hears it.  "Hey Rex" re-opens the mic.
-                wakeword.feed(indata.tobytes())
-                return
-            if not self.ui.muted or getattr(self.ui, "_wakeword_listening", False):
+            if not rex_speaking and (not self.ui.muted or getattr(self.ui, "_wakeword_listening", False)):
                 data = indata.tobytes()
                 loop.call_soon_threadsafe(
                     self.out_queue.put_nowait,
@@ -2131,38 +1344,22 @@ class AlmightyLive:
                 )
 
         try:
-            from linux_shim import configure_audio_devices
-            await asyncio.to_thread(configure_audio_devices)
-        except Exception:
-            pass
-
-        def _open_input():
-            return sd.InputStream(
+            with sd.InputStream(
                 samplerate=SEND_SAMPLE_RATE,
                 channels=CHANNELS,
                 dtype="int16",
                 blocksize=CHUNK_SIZE,
                 callback=callback,
-            )
-
-        try:
-            # Open in a worker thread with a timeout so a flaky device can
-            # never freeze the event loop. If capture is unavailable, degrade
-            # gracefully: the session keeps running (text in, TTS out).
-            stream = await asyncio.wait_for(
-                asyncio.to_thread(_open_input), timeout=6.0
-            )
+            ):
+                print("[REX] 🎤 Mic stream open")
+                while True:
+                    await asyncio.sleep(0.1)
         except Exception as e:
-            print(f"[ALMIGHTY] ❌ Mic: {e}")
-            return
-
-        with stream:
-            print("[ALMIGHTY] 🎤 Mic stream open")
-            while True:
-                await asyncio.sleep(0.1)
+            print(f"[REX] ❌ Mic: {e}")
+            raise
 
     async def _receive_audio(self):
-        print("[ALMIGHTY] 👂 Recv started")
+        print("[REX] 👂 Recv started")
         out_buf, in_buf = [], []
 
         try:
@@ -2187,15 +1384,15 @@ class AlmightyLive:
                                 try:
                                     from actions.attention_monitor import stop_native_speech
                                     stop_native_speech()
-                                except Exception:
-                                    pass
+                                except Exception as _e:
+                                    log_error(_e, context="main._receive_audio", severity="warning")
                                 in_buf.append(txt)
                                 if self.ui.muted and _wakeword_detected(txt):
                                     try:
                                         self.ui.set_muted_state(False, wakeword=True)
                                         self.ui.write_log("SYS: Wake word detected. Mic active.")
-                                    except Exception:
-                                        pass
+                                    except Exception as _e:
+                                        log_error(_e, context="main._receive_audio", severity="warning")
 
                         if sc.turn_complete:
                             self.set_speaking(False)
@@ -2207,7 +1404,7 @@ class AlmightyLive:
 
                             full_out = " ".join(out_buf).strip()
                             if full_out:
-                                self.ui.write_log(f"Rex: {full_out}")
+                                self.ui.write_log(f"REX: {full_out}")
                             out_buf = []
 
                             if full_in and len(full_in) > 5:
@@ -2220,7 +1417,7 @@ class AlmightyLive:
                     if response.tool_call:
                         fn_responses = []
                         for fc in response.tool_call.function_calls:
-                            print(f"[ALMIGHTY] 📞 {fc.name}")
+                            print(f"[REX] 📞 {fc.name}")
                             fr = await self._execute_tool(fc)
                             fn_responses.append(fr)
                         await self.session.send_tool_response(
@@ -2228,36 +1425,20 @@ class AlmightyLive:
                         )
 
         except Exception as e:
-            print(f"[ALMIGHTY] ❌ Recv: {e}")
+            print(f"[REX] ❌ Recv: {e}")
             traceback.print_exc()
             raise
 
     async def _play_audio(self):
-        print("[ALMIGHTY] 🔊 Play started")
+        print("[REX] 🔊 Play started")
         loop = asyncio.get_event_loop()
 
-        try:
-            from linux_shim import configure_audio_devices
-            await asyncio.to_thread(configure_audio_devices)
-        except Exception:
-            pass
-
-        def _open_output():
-            return sd.RawOutputStream(
-                samplerate=RECEIVE_SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype="int16",
-                blocksize=CHUNK_SIZE,
-            )
-
-        try:
-            stream = await asyncio.wait_for(
-                asyncio.to_thread(_open_output), timeout=6.0
-            )
-        except Exception as e:
-            print(f"[ALMIGHTY] ❌ Play: {e}")
-            raise
-
+        stream = sd.RawOutputStream(
+            samplerate=RECEIVE_SAMPLE_RATE,
+            channels=CHANNELS,
+            dtype="int16",
+            blocksize=CHUNK_SIZE,
+        )
         stream.start()
         try:
             while True:
@@ -2265,7 +1446,7 @@ class AlmightyLive:
                 self.set_speaking(True)
                 await asyncio.to_thread(stream.write, chunk)
         except Exception as e:
-            print(f"[ALMIGHTY] ❌ Play: {e}")
+            print(f"[REX] ❌ Play: {e}")
             raise
         finally:
             self.set_speaking(False)
@@ -2282,15 +1463,15 @@ class AlmightyLive:
             self.ui.boot_add_step("Connect AI backend")
             self.ui.boot_add_step("Finalize startup")
             self.ui.boot_set_progress(3, "Preparing startup...")
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="main.run", severity="warning")
 
         self._attention_monitor.start()
         try:
             self.ui.boot_set_step_status("Start attention monitor", "done")
             self.ui.boot_set_progress(12, "Attention monitor online")
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="main.run", severity="warning")
         if self._dashboard is not None:
             if not self._dashboard_started:
                 self._dashboard_started = True
@@ -2298,14 +1479,14 @@ class AlmightyLive:
                 try:
                     self.ui.boot_set_step_status("Start dashboard server", "done")
                     self.ui.boot_set_progress(22, "Mobile connect server running")
-                except Exception:
-                    pass
+                except Exception as _e:
+                    log_error(_e, context="main.run", severity="warning")
             asyncio.create_task(self._consume_remote_commands())
             asyncio.create_task(self._relay_phone_audio())
         try:
             self.ui.boot_set_progress(36, "Initializing AI client")
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="main.run", severity="warning")
 
         client = genai.Client(
             api_key=_get_api_key(),
@@ -2314,7 +1495,7 @@ class AlmightyLive:
 
         while True:
             try:
-                print("[ALMIGHTY] 🔌 Connecting...")
+                print("[REX] 🔌 Connecting...")
                 self.ui.set_state("THINKING")
                 config = self._build_config()
 
@@ -2327,14 +1508,14 @@ class AlmightyLive:
                         self.audio_in_queue = asyncio.Queue()
                         self.out_queue      = asyncio.Queue(maxsize=10)
 
-                        print("[ALMIGHTY] ✅ Connected.")
+                        print("[REX] ✅ Connected.")
                         try:
                             self.ui.boot_set_step_status("Connect AI backend", "done")
                             self.ui.boot_set_progress(75, "AI backend connected")
-                        except Exception:
-                            pass
+                        except Exception as _e:
+                            log_error(_e, context="main.run", severity="warning")
                         self.ui.set_state("LISTENING")
-                        self.ui.write_log("SYS: Almighty AI online.")
+                        self.ui.write_log("SYS: REX online.")
 
                         tg.create_task(self._send_realtime())
                         tg.create_task(self._listen_audio())
@@ -2344,22 +1525,22 @@ class AlmightyLive:
                         try:
                             self.ui.boot_set_step_status("Initialize audio", "done")
                             self.ui.boot_set_progress(92, "Audio subsystems online")
-                        except Exception:
-                            pass
+                        except Exception as _e:
+                            log_error(_e, context="main.run", severity="warning")
                         # finalize
                         try:
                             self.ui.boot_set_step_status("Finalize startup", "done")
                             self.ui.boot_set_progress(100, "Startup complete")
-                        except Exception:
-                            pass
+                        except Exception as _e:
+                            log_error(_e, context="main.run", severity="warning")
                 finally:
                     try:
                         await connect_cm.__aexit__(None, None, None)
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        log_error(_e, context="main.run", severity="warning")
                     
             except Exception as e:
-                print(f"[ALMIGHTY] ⚠️ {e}")
+                print(f"[REX] ⚠️ {e}")
                 traceback.print_exc()
                 if _is_gemini_limit_error(e):
                     self._use_openrouter_first = True
@@ -2367,41 +1548,21 @@ class AlmightyLive:
                 self._loop = None
             self.set_speaking(False)
             self.ui.set_state("LISTENING")
-            print("[ALMIGHTY] 🔄 Reconnecting in 5s...")
+            print("[REX] 🔄 Reconnecting in 5s...")
             await asyncio.sleep(5)
 
 def main():
     _startup_log("main entered")
     _ensure_desktop_shortcut()
-    try:
-        from config.profile import load_license_state
-        _lic = load_license_state()
-        if _lic.tier == "pro":
-            _startup_log(f"license: pro ({_lic.licensee or 'unknown'})")
-        elif _lic.reason:
-            _startup_log(f"license: invalid saved key ({_lic.reason})")
-        else:
-            _startup_log("license: community")
-    except Exception as _lic_exc:
-        _lic = None
-        _startup_log(f"license: check failed ({_lic_exc})")
-    ui = AlmightyUI(str(BASE_DIR / "assets" / "Almighty_AI_Logo.png"), show_immediately=True)
-    if _lic is not None:
-        try:
-            if _lic.tier == "pro":
-                ui.write_log(f"SYS: Almighty Pro active — {_lic.licensee or 'licensed'}.")
-            elif _lic.reason:
-                ui.write_log(f"SYS: Saved license key is invalid: {_lic.reason}")
-        except Exception:
-            pass
+    ui = REXUI(str(BASE_DIR / "assets" / "REX_Logo.png"), show_immediately=True)
     dashboard = None
     dashboard_enabled = DashboardServer is not None and not _is_port_in_use(8000)
     if DashboardServer is not None and not dashboard_enabled:
         _startup_log("dashboard disabled: port 8000 already in use")
         try:
-            ui.write_log("SYS: Mobile Connect is already running in another Almighty instance.")
-        except Exception:
-            pass
+            ui.write_log("SYS: Mobile Connect is already running in another REX instance.")
+        except Exception as _e:
+            log_error(_e, context="main.main", severity="warning")
     if dashboard_enabled:
         dashboard = DashboardServer()
 
@@ -2414,8 +1575,8 @@ def main():
                 _startup_log(f"dashboard thread error: {exc}")
                 try:
                     ui.write_log(f"ERR: Mobile Connect server failed: {exc}")
-                except Exception:
-                    pass
+                except Exception as _e:
+                    log_error(_e, context="main._start_dashboard_server", severity="warning")
 
         threading.Thread(target=_start_dashboard_server, daemon=True).start()
         _startup_log("dashboard thread spawned")
@@ -2430,33 +1591,11 @@ def main():
     except Exception:
         plugin_manager = None
 
-    # Startup update check: gated by the check_updates_on_startup setting and
-    # the Pro license. Runs in the background — never blocks boot.
-    try:
-        from updater import AutoUpdater
-        from config.profile import is_pro
-        settings = ui._load_app_settings() if hasattr(ui, "_load_app_settings") else {}
-        if settings.get("check_updates_on_startup", True) and is_pro():
-            def _on_update_check(result: dict):
-                try:
-                    if result.get("status") == "update-available":
-                        ui.write_log(f"SYS: Update available — v{result.get('latest')}. Apply it in Settings → System & Connect → Updates.")
-                    elif result.get("status") == "error":
-                        ui.write_log(f"SYS: Update check failed: {result.get('error')}")
-                except Exception:
-                    pass
-            AutoUpdater(BASE_DIR, _startup_log).check_in_background(on_done=_on_update_check)
-            _startup_log("startup update check scheduled")
-        else:
-            _startup_log("startup update check skipped (setting off or Community)")
-    except Exception as _upd_exc:
-        _startup_log(f"startup update check setup failed: {_upd_exc}")
-
     def runner():
         _startup_log("runner waiting api key")
         ui.wait_for_api_key()
         _startup_log("runner api key ready")
-        almighty = AlmightyLive(
+        rex = RexLive(
             ui,
             dashboard=dashboard,
             dashboard_started=dashboard is not None,
@@ -2464,17 +1603,17 @@ def main():
         )
         try:
             if plugin_manager is not None:
-                almighty.plugin_manager = plugin_manager
-                plugin_manager.register_almighty(almighty)
+                rex.plugin_manager = plugin_manager
+                plugin_manager.register_rex(rex)
                 # allow plugins to run a startup hook
                 try:
-                    plugin_manager.dispatch("on_startup", almighty)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                    plugin_manager.dispatch("on_startup", rex)
+                except Exception as _e:
+                    log_error(_e, context="main.runner", severity="warning")
+        except Exception as _e:
+            log_error(_e, context="main.runner", severity="warning")
         try:
-            asyncio.run(almighty.run())
+            asyncio.run(rex.run())
         except KeyboardInterrupt:
             print("\n🔴 Shutting down...")
 
@@ -2492,12 +1631,8 @@ def main():
             ).start()
         )
     except Exception:
-        # Never double-spawn the runner thread here: start_runner() above
-        # already did. Just restore the window and fire the briefing.
-        try:
-            ui.show_main()
-        except Exception:
-            pass
+        ui.show_main()
+        start_runner()
         threading.Thread(
             target=_speak_daily_briefing,
             args=(ui,),

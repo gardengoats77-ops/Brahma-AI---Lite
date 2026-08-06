@@ -17,6 +17,7 @@ import json
 import re
 import time
 from pathlib import Path
+from core.error_handler import log_error
 
 
 def get_base_dir():
@@ -37,8 +38,9 @@ def _get_api_key() -> str:
 
 
 def _get_gemini(model: str = GEMINI_MODEL):
-    from actions._llm import gemini
-    return gemini(model)
+    import google.generativeai as genai
+    genai.configure(api_key=_get_api_key())
+    return genai.GenerativeModel(model)
 
 
 def _clean_code(text: str) -> str:
@@ -62,7 +64,7 @@ def _resolve_save_path(output_path: str, language: str) -> Path:
         p = Path(output_path)
         return p if p.is_absolute() else DESKTOP / p
     ext = ext_map.get((language or "python").lower(), ".py")
-    return DESKTOP / f"almighty_code{ext}"
+    return DESKTOP / f"rex_code{ext}"
 
 
 def _read_file(file_path: str) -> tuple[str, str]:
@@ -102,7 +104,7 @@ def _has_error(output: str) -> bool:
 def _take_screenshot() -> Path | None:
     try:
         import pyautogui
-        screenshot_path = Path.home() / "Desktop" / f"almighty_debug_{int(time.time())}.png"
+        screenshot_path = Path.home() / "Desktop" / f"rex_debug_{int(time.time())}.png"
         screenshot = pyautogui.screenshot()
         screenshot.save(str(screenshot_path))
         print(f"[Code] 📸 Screenshot: {screenshot_path}")
@@ -495,8 +497,9 @@ Be specific and actionable. If you see an error message, quote it exactly."""
 
         try:
             screenshot_path.unlink()
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="actions.code_helper", severity="debug")
 
         if file_path and file_content:
 
@@ -514,8 +517,9 @@ Be specific and actionable. If you see an error message, quote it exactly."""
 
         try:
             screenshot_path.unlink()
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="actions.code_helper", severity="debug")
         return f"Screen analysis failed: {e}"
 
 

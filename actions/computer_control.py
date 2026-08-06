@@ -8,6 +8,7 @@ import sys
 import time
 import random
 from pathlib import Path
+from core.error_handler import log_error
 
 try:
     import pyautogui
@@ -47,7 +48,7 @@ _SAFE_SCREENSHOT_ROOTS = (
 )
 
 def _safe_screenshot_path(requested: str | None) -> Path:
-    fallback = Path.home() / "Desktop" / "almighty_screenshot.png"
+    fallback = Path.home() / "Desktop" / "rex_screenshot.png"
     if not requested:
         return fallback
     try:
@@ -56,8 +57,8 @@ def _safe_screenshot_path(requested: str | None) -> Path:
             if p.is_relative_to(root.resolve()):
                 p.parent.mkdir(parents=True, exist_ok=True)
                 return p
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.computer_control", severity="warning")
     return fallback
 
 def _require_pyautogui():
@@ -135,8 +136,8 @@ def _user_profile() -> dict:
             data     = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
             identity = data.get("identity", {})
             return {k: v.get("value", "") for k, v in identity.items()}
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.computer_control", severity="warning")
     return {}
 
 def _type(text: str, interval: float = 0.03) -> str:

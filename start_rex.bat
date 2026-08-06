@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-title Almighty AI - Premium Launcher
+title REX - Premium Launcher
 cd /d "%~dp0"
 
 set "ROOT=%~dp0"
@@ -14,7 +14,7 @@ set "PYCMD="
 
 echo.
 echo ==============================================
-echo      Almighty AI  ^| Premium Launcher
+echo      REX  ^|  Premium Launcher
 echo ==============================================
 echo.
 
@@ -116,11 +116,11 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo Launching Almighty AI...
+echo Launching REX...
 if exist "%PYW%" (
-  start "Almighty AI" /b "%PYW%" "%MAIN%" --startup
+  start "REX" /b "%PYW%" "%MAIN%" --startup
 ) else (
-  start "Almighty AI" /b "%PYCMD%" "%MAIN%" --startup
+  start "REX" /b "%PYCMD%" "%MAIN%" --startup
 )
 
 echo Launcher complete.

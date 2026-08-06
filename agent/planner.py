@@ -1,8 +1,20 @@
 import json
 import re
+import sys
+from pathlib import Path
 
 
-PLANNER_PROMPT = """You are the planning module of Almighty AI, a personal AI assistant.
+def get_base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent.parent
+
+
+BASE_DIR        = get_base_dir()
+API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+
+
+PLANNER_PROMPT = """You are the planning module of REX, a personal AI assistant.
 Your job: break any user goal into a sequence of steps using ONLY the tools listed below.
 
 ABSOLUTE RULES:
@@ -166,69 +178,9 @@ OUTPUT — return ONLY valid JSON, no markdown, no explanation, no code blocks:
 """
 
 
-def _skills_section() -> str:
-    """Dynamic SKILLS block appended to the planner prompt when skills exist.
-
-    Skills are a Pro feature: without an active Pro license the block is
-    omitted entirely so the model never sees the tools. Zero skills installed
-    -> also returns "" so the prompt is unchanged.
-    """
-    try:
-        from config.profile import is_pro
-        if not is_pro():
-            return ""
-        from skill_manager import get_skill_manager
-        skills = get_skill_manager().list_skills()
-    except Exception:
-        return ""
-    if not skills:
-        return ""
-
-    catalog = "\n".join(f"- {s['name']}: {s['description']}" for s in skills)
-    return (
-        "\n\nSKILLS (learned instruction sets):\n"
-        "  list_skills — list available skills (name + description)\n"
-        "  load_skill  — name: string (required) — loads a skill's full markdown instructions\n"
-        "When the goal matches a skill's description, FIRST load_skill the best match, "
-        "then carry out its instructions using the normal tools above.\n"
-        "Installed skills:\n"
-        f"{catalog}\n"
-    )
-
-
-def _mcp_section() -> str:
-    """Dynamic MCP block appended to the planner prompt when MCP tools exist.
-
-    MCP servers are a Pro feature: without an active Pro license the block is
-    omitted entirely so the model never sees the tools. Zero configured MCP
-    tools -> also returns "" so the prompt is unchanged.
-    """
-    try:
-        from config.profile import is_pro
-        if not is_pro():
-            return ""
-        from mcp_client import get_mcp_manager
-        tools = get_mcp_manager().list_tools()
-    except Exception:
-        return ""
-    if not tools:
-        return ""
-
-    lines = []
-    for t in tools:
-        schema = t.get("inputSchema") or {}
-        required = schema.get("required") or []
-        req = f" (required: {', '.join(str(r) for r in required)})" if required else ""
-        lines.append(f"- {t['name']}{req}: {t.get('description') or ''}")
-    return (
-        "\n\nMCP TOOLS (tools from connected Model Context Protocol servers):\n"
-        "  mcp_list — list available MCP tools (name + description)\n"
-        "Use an MCP tool directly by its name when it matches the goal — treat it "
-        "like any other tool above, passing its parameters.\n"
-        "Connected MCP tools:\n"
-        + "\n".join(lines)
-        + "\n"
-    )
+def _get_api_key() -> str:
+    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)["gemini_api_key"]
 
 
 def _looks_like_website_goal(goal: str) -> bool:
@@ -267,9 +219,13 @@ def _rewrite_generated_step(step: dict, goal: str) -> None:
 
 
 def create_plan(goal: str, context: str = "") -> dict:
-    from actions._llm import gemini
+    import google.generativeai as genai
 
-    model = gemini("gemini-2.5-flash-lite", system_instruction=PLANNER_PROMPT + _skills_section() + _mcp_section())
+    genai.configure(api_key=_get_api_key())
+    model = genai.GenerativeModel(
+        model_name="gemini-2.5-flash-lite",
+        system_instruction=PLANNER_PROMPT
+    )
 
     user_input = f"Goal: {goal}"
     if context:
@@ -332,9 +288,13 @@ def _fallback_plan(goal: str) -> dict:
 
 
 def replan(goal: str, completed_steps: list, failed_step: dict, error: str) -> dict:
-    from actions._llm import gemini
+    import google.generativeai as genai
 
-    model = gemini("gemini-2.5-flash", system_instruction=PLANNER_PROMPT + _skills_section() + _mcp_section())
+    genai.configure(api_key=_get_api_key())
+    model = genai.GenerativeModel(
+        model_name="gemini-2.5-flash",
+        system_instruction=PLANNER_PROMPT
+    )
 
     completed_summary = "\n".join(
         f"  - Step {s['step']} ({s['tool']}): DONE" for s in completed_steps

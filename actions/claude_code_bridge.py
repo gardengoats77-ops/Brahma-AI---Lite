@@ -8,6 +8,7 @@ from typing import Any
 
 from actions.dev_agent import dev_agent
 from actions.website_builder import website_builder
+from core.error_handler import log_error
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -20,8 +21,8 @@ def _load_settings() -> dict[str, Any]:
             data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 return data
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.claude_code_bridge", severity="debug")
     return {}
 
 
@@ -91,5 +92,5 @@ def run_developer_mode_request(parameters: dict[str, Any], speak=None) -> str:
         return website_builder(params, player=None)
 
     params.setdefault("language", params.get("language") or "python")
-    params.setdefault("project_name", params.get("project_name") or "almighty_project")
+    params.setdefault("project_name", params.get("project_name") or "rex_project")
     return dev_agent(params, player=None, speak=speak)

@@ -22,6 +22,7 @@ except ImportError:
 
 from google import genai
 from google.genai import types
+from core.error_handler import log_error
 
 def get_base_dir():
     if getattr(sys, "frozen", False):
@@ -41,7 +42,7 @@ IMG_MAX_H = 360
 JPEG_Q    = 55
 
 SYSTEM_PROMPT = (
-    "You are Rex, an open-source assistant for Almighty AI. "
+    "You are REX, an open-source assistant. "
     "Analyze images with technical precision and intelligence. "
     "Help the user in a way they can understand — don't be overly complex. "
     "Be concise, smart, and helpful like Tony Stark's AI assistant. "
@@ -69,8 +70,9 @@ def _get_camera_index() -> int:
             cfg = json.load(f)
         if "camera_index" in cfg:
             return int(cfg["camera_index"])
-    except Exception:
-        pass
+    except Exception as _e:
+
+        log_error(_e, context="actions.screen_processor", severity="warning")
 
     print("[Camera] 🔍 No camera index in config. Auto-detecting...")
     best_index = 0
@@ -253,7 +255,7 @@ class _LiveSession:
                     if transcript_buf and self._player:
                         full = re.sub(r'\s+', ' ', " ".join(transcript_buf)).strip()
                         if full:
-                            self._player.write_log(f"Rex: {full}")
+                            self._player.write_log(f"REX: {full}")
                             print(f"[ScreenProcess] 💬 {full}")
                             if hasattr(self._player, "set_scanning"):
                                 self._player.set_scanning(False, "")

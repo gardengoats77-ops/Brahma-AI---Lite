@@ -1,0 +1,2207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Garden Goats LLC - Dispatch</title>
+    <link rel="manifest" href="./manifest.json">
+    <meta name="theme-color" content="#10b981">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body class="bg-slate-950 font-sans text-slate-100 antialiased min-h-screen">
+    <style>
+        @keyframes pulse {
+            0% { box-shadow: 0 0 12px rgba(59, 130, 246, 0.6); }
+            50% { box-shadow: 0 0 24px rgba(59, 130, 246, 0.9); }
+            100% { box-shadow: 0 0 12px rgba(59, 130, 246, 0.6); }
+        }
+        .gps-marker { background: transparent !important; border: none !important; }
+        .custom-marker { background: transparent !important; border: none !important; }
+        .leaflet-control-zoom { border: none !important; }
+        .leaflet-control-zoom a { background-color: #1e293b !important; color: #e2e8f0 !important; border-color: #334155 !important; }
+        .leaflet-control-zoom a:hover { background-color: #334155 !important; }
+    </style>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+        // CSV Utility Functions
+        function parseCSV(text) {
+            const lines = text.trim().split('\n');
+            if (lines.length < 2) return [];
+            const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/[^a-z0-9_]/g, ''));
+            const results = [];
+            for (let i = 1; i < lines.length; i++) {
+                const values = lines[i].match(/("[^"]*"|[^,]+)/g) || [];
+                const row = {};
+                headers.forEach((h, idx) => {
+                    let val = (values[idx] || '').trim();
+                    if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
+                    row[h] = val;
+                });
+                results.push(row);
+            }
+            return results;
+        }
+
+        function toCSVRow(values) {
+            return values.map(v => {
+                const s = String(v == null ? '' : v);
+                if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+                    return '"' + s.replace(/"/g, '""') + '"';
+                }
+                return s;
+            }).join(',');
+        }
+
+        function downloadCSV(filename, csvContent) {
+            const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js').catch(err => console.error('SW Failed: ', err));
+            });
+        }
+
+        const FALLBACK_JOBS = [
+            { id: 1, address: "6204 Chatham Way", service: "One time Fall Clean Up", lastJob: "No jobs completed", completedHistory: [] },
+            { id: 2, address: "126 N Kent St", service: "Every 2 Weeks Lawn Care Bundle", lastJob: "Jul 21 2026", completedHistory: [{ date: "Jul 21 2026", timestamp: 1753113600000 }] },
+            { id: 3, address: "7198 Dell Road", service: "One time Fall Clean Up", lastJob: "No jobs completed", completedHistory: [] },
+            { id: 4, address: "1618 Natchez Avenue So...", service: "Every 2 Weeks Lawn Mowing", lastJob: "Jul 14 2026", completedHistory: [{ date: "Jul 14 2026", timestamp: 1752508800000 }] },
+            { id: 5, address: "3513 Emerson Avenue So...", service: "Weekly Lawn Mowing", lastJob: "Jul 20 2026", completedHistory: [{ date: "Jul 20 2026", timestamp: 1753027200000 }] },
+            { id: 6, address: "2448 Lyndale Ave S", service: "Weekly Lawn Mowing", lastJob: "Jul 29 2026", completedHistory: [{ date: "Jul 29 2026", timestamp: 1753804800000 }] },
+            { id: 7, address: "3136 Hennepin Ave", service: "Weekly Lawn Mowing", lastJob: "Jul 20 2026", completedHistory: [{ date: "Jul 20 2026", timestamp: 1753027200000 }] },
+            { id: 8, address: "1532 Randolph Avenue", service: "Weekly Lawn Care Bundle", lastJob: "Jul 27 2026", completedHistory: [{ date: "Jul 27 2026", timestamp: 1753632000000 }] },
+            { id: 9, address: "2007 Aldrich Avenue Sou...", service: "Every 2 Weeks Lawn Mowing", lastJob: "Jul 21 2026", completedHistory: [{ date: "Jul 21 2026", timestamp: 1753113600000 }] },
+            { id: 10, address: "4022 Lynn Avenue", service: "One time Fall Clean Up", lastJob: "No jobs completed", completedHistory: [] }
+        ];
+
+        function calculateDistance(lat1, lon1, lat2, lon2) {
+            const R = 3958.8;
+            const dLat = (lat2 - lat1) * (Math.PI / 180);
+            const dLon = (lon2 - lon1) * (Math.PI / 180);
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                      Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * 
+                      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        }
+
+        // Geocoding cache in localStorage
+        const GEOCODE_CACHE_KEY = 'garden_goats_geocode_cache';
+        function getGeocodeCache() {
+            try {
+                return JSON.parse(localStorage.getItem(GEOCODE_CACHE_KEY) || '{}');
+            } catch { return {}; }
+        }
+        function setGeocodeCache(cache) {
+            localStorage.setItem(GEOCODE_CACHE_KEY, JSON.stringify(cache));
+        }
+
+        // Geocode an address using free Nominatim API (OpenStreetMap)
+        async function geocodeAddress(address, city) {
+            const cache = getGeocodeCache();
+            const cacheKey = address.toLowerCase().trim();
+            if (cache[cacheKey]) return cache[cacheKey];
+
+            // Add Minneapolis, MN context for local addresses
+            const query = city ? `${address}, ${city}` : `${address}, Minneapolis, MN`;
+            try {
+                const resp = await fetch(
+                    `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`,
+                    { headers: { 'User-Agent': 'GardenGoatsDispatch/1.0' } }
+                );
+                const data = await resp.json();
+                if (data.length > 0) {
+                    const result = { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+                    cache[cacheKey] = result;
+                    setGeocodeCache(cache);
+                    return result;
+                }
+            } catch (err) {
+                console.error('Geocoding failed:', err);
+            }
+            return null;
+        }
+
+        // Nearest-neighbor route optimization
+        function optimizeRoute(stops) {
+            if (stops.length <= 2) return stops;
+
+            const stopsWithCoords = stops.filter(s => s._coords);
+            const stopsWithoutCoords = stops.filter(s => !s._coords);
+
+            if (stopsWithCoords.length <= 2) return stops;
+
+            const optimized = [];
+            const remaining = [...stopsWithCoords];
+            // Start from the first stop (or could use current GPS position)
+            let current = remaining.shift();
+            optimized.push(current);
+
+            while (remaining.length > 0) {
+                let nearestIdx = 0;
+                let nearestDist = Infinity;
+                for (let i = 0; i < remaining.length; i++) {
+                    const dist = calculateDistance(
+                        current._coords.lat, current._coords.lng,
+                        remaining[i]._coords.lat, remaining[i]._coords.lng
+                    );
+                    if (dist < nearestDist) {
+                        nearestDist = dist;
+                        nearestIdx = i;
+                    }
+                }
+                current = remaining.splice(nearestIdx, 1)[0];
+                optimized.push(current);
+            }
+
+            // Append any stops without coordinates at the end
+            return [...optimized, ...stopsWithoutCoords];
+        }
+
+        // ---- Recurring Job Scheduling ----
+
+        // Return the number of days between visits based on the service name
+        function getFrequencyDays(service) {
+            const s = (service || '').toLowerCase();
+            if (s.includes('weekly')) return 7;
+            if (s.includes('2 weeks') || s.includes('bi-week') || s.includes('biweekly')) return 14;
+            if (s.includes('monthly') || s.includes('month ')) return 30;
+            return null; // one-time service, no recurrence
+        }
+
+        // Parse a job date string like "Jul 21 2026" or "Aug 3, 2026" into a Date (or null)
+        function parseJobDate(str) {
+            if (!str || str === 'No jobs completed') return null;
+            const m = String(str).match(/([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})/);
+            if (m) {
+                const monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+                const month = monthMap[m[1].toLowerCase().slice(0, 3)];
+                if (month !== undefined) {
+                    const d = new Date(parseInt(m[3]), month, parseInt(m[2]));
+                    return isNaN(d.getTime()) ? null : d;
+                }
+            }
+            const d = new Date(str);
+            return isNaN(d.getTime()) ? null : d;
+        }
+
+        // Format a Date as "Aug 5"
+        function fmtShort(date) {
+            return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        }
+
+        // Compute the scheduling state for a single job
+        function getJobSchedule(job) {
+            const freqDays = getFrequencyDays(job.service);
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+
+            if (!freqDays) {
+                return { freqDays: null, nextDue: null, status: 'once', daysUntil: null, daysOverdue: 0 };
+            }
+
+            const lastDate = parseJobDate(job.lastJob);
+            if (job.lastJob === 'No jobs completed') {
+                // Recurring service but never serviced — first visit due now
+                return { freqDays, nextDue: today, status: 'dueToday', daysUntil: 0, daysOverdue: 0 };
+            }
+            if (!lastDate) {
+                // Recurring service with a date we can't parse — don't guess, flag it
+                return { freqDays, nextDue: null, status: 'unknown', daysUntil: null, daysOverdue: 0 };
+            }
+
+            // Roll the next due date forward to the nearest future occurrence
+            let nextDue = new Date(lastDate);
+            nextDue.setDate(nextDue.getDate() + freqDays);
+            let daysOverdue = 0;
+            while (nextDue < today) {
+                nextDue.setDate(nextDue.getDate() + freqDays);
+                daysOverdue += freqDays;
+            }
+
+            const daysUntil = Math.round((nextDue - today) / 86400000);
+            let status;
+            if (daysOverdue > 0) status = 'overdue';
+            else if (daysUntil === 0) status = 'dueToday';
+            else if (daysUntil <= 7) status = 'thisWeek';
+            else if (daysUntil <= 30) status = 'upcoming';
+            else status = 'later';
+
+            return { freqDays, nextDue, status, daysUntil, daysOverdue };
+        }
+
+        // ---- Maps Integration (Google Maps / Apple Maps) ----
+
+        // Parse a Google Maps, Apple Maps, or geo: URI into { lat, lng, label }
+        function parseMapsLink(url) {
+            if (!url) return null;
+            url = url.trim();
+
+            // geo: URI
+            let m = url.match(/^geo:([-\d.]+),([-\d.]+)/);
+            if (m) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]), label: null };
+
+            // Google short links (maps.app.goo.gl) can't be parsed offline — skip
+            if (/goo\.gl/.test(url)) return { short: true };
+
+            try {
+                const u = new URL(url);
+                const host = u.hostname.toLowerCase();
+                const isGoogle = host.includes('google') && (host.includes('maps') || url.includes('google.com/maps'));
+                const isApple = host.includes('apple') && (host.includes('maps') || url.includes('maps.apple'));
+                if (!isGoogle && !isApple) return null;
+
+                let lat = null, lng = null, label = null;
+
+                // Google: @lat,lng in path, or q=lat,lng or q=address
+                if (isGoogle) {
+                    const at = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+                    if (at) { lat = parseFloat(at[1]); lng = parseFloat(at[2]); }
+                    const q = u.searchParams.get('q');
+                    if (q) {
+                        const qm = q.match(/^(-?\d+\.\d+),(-?\d+\.\d+)$/);
+                        if (qm) { lat = parseFloat(qm[1]); lng = parseFloat(qm[2]); }
+                        else label = q.replace(/\+/g, ' ');
+                    }
+                    // decode place name from path (e.g. /place/Street+Name/@...)
+                    if (!label) {
+                        const placeM = url.match(/\/place\/([^/@]+)/);
+                        if (placeM) label = decodeURIComponent(placeM[1].replace(/\+/g, ' '));
+                    }
+                }
+
+                // Apple: ll=lat,lng or address=... or q=...
+                if (isApple) {
+                    const ll = u.searchParams.get('ll');
+                    if (ll) {
+                        const [la, ln] = ll.split(',');
+                        lat = parseFloat(la); lng = parseFloat(ln);
+                    }
+                    label = u.searchParams.get('address') || u.searchParams.get('q') || label || null;
+                }
+
+                return { lat, lng, label };
+            } catch (e) {
+                return null;
+            }
+        }
+
+        // Reverse-geocode coordinates to a display address using Nominatim
+        async function reverseGeocode(lat, lng) {
+            try {
+                const resp = await fetch(
+                    `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,
+                    { headers: { 'User-Agent': 'GardenGoatsDispatch/1.0' } }
+                );
+                const data = await resp.json();
+                if (data && data.display_name) {
+                    // Shorten to street + city for cleanliness
+                    const parts = data.display_name.split(',');
+                    return parts.slice(0, 3).join(',').trim();
+                }
+            } catch (err) {
+                console.error('Reverse geocoding failed:', err);
+            }
+            return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+        }
+
+        // ---- Offline Turn-by-Turn Navigation (OSRM) ----
+
+        const OSRM_CACHE_KEY = 'garden_goats_osrm_cache';
+        const OSRM_DEFAULT_ENDPOINT = 'https://router.project-osrm.org';
+        const OSRM_ENDPOINT_KEY = 'garden_goats_osrm_endpoint';
+
+        function getOsrmEndpoint() {
+            try {
+                return localStorage.getItem(OSRM_ENDPOINT_KEY) || OSRM_DEFAULT_ENDPOINT;
+            } catch { return OSRM_DEFAULT_ENDPOINT; }
+        }
+        function setOsrmEndpoint(url) {
+            try {
+                localStorage.setItem(OSRM_ENDPOINT_KEY, url.trim() || OSRM_DEFAULT_ENDPOINT);
+            } catch {}
+        }
+        function getOsrmCache() {
+            try {
+                return JSON.parse(localStorage.getItem(OSRM_CACHE_KEY) || '{}');
+            } catch { return {}; }
+        }
+        function setOsrmCache(cache) {
+            localStorage.setItem(OSRM_CACHE_KEY, JSON.stringify(cache));
+        }
+
+        // Cache key rounds coords so repeat trips reuse the cached route
+        function osrmCacheKey(from, to) {
+            return `${from.lat.toFixed(4)},${from.lng.toFixed(4)}|${to.lat.toFixed(4)},${to.lng.toFixed(4)}`;
+        }
+
+        // Fetch a driving route from the OSRM server; falls back to cache or straight-line
+        async function fetchOsrmRoute(from, to) {
+            const cache = getOsrmCache();
+            const key = osrmCacheKey(from, to);
+            if (cache[key]) {
+                return { ...cache[key], cached: true, offline: false };
+            }
+            const endpoint = getOsrmEndpoint();
+            const url = `${endpoint}/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=geojson&steps=true`;
+            try {
+                const resp = await fetch(url, { headers: { 'User-Agent': 'GardenGoatsDispatch/1.0' } });
+                const data = await resp.json();
+                if (data.code !== 'Ok' || !data.routes || !data.routes[0]) throw new Error('Routing failed');
+                const route = data.routes[0];
+                const result = {
+                    geometry: route.geometry,             // { type: 'LineString', coordinates: [[lon,lat],...] }
+                    distance: route.distance,             // meters
+                    duration: route.duration,             // seconds
+                    legs: route.legs,
+                    fetchedAt: Date.now()
+                };
+                // Keep cache bounded (last 200 routes)
+                const keys = Object.keys(cache);
+                if (keys.length >= 200) delete cache[keys[0]];
+                cache[key] = result;
+                setOsrmCache(cache);
+                return { ...result, cached: false, offline: false };
+            } catch (err) {
+                console.error('OSRM failed:', err);
+                // Offline fallback: straight line between the two points
+                const straightDist = calculateDistance(from.lat, from.lng, to.lat, to.lng);
+                return {
+                    geometry: {
+                        type: 'LineString',
+                        coordinates: [[from.lng, from.lat], [to.lng, to.lat]]
+                    },
+                    distance: straightDist * 1609.344,
+                    duration: straightDist / 25 * 3600,
+                    legs: [],
+                    cached: false,
+                    offline: true
+                };
+            }
+        }
+
+        // Build turn-by-turn instructions from OSRM legs/steps
+        function buildInstructions(osrmRoute) {
+            if (!osrmRoute || !osrmRoute.legs || osrmRoute.legs.length === 0) return [];
+            const steps = [];
+            osrmRoute.legs.forEach(leg => {
+                (leg.steps || []).forEach(step => {
+                    const type = step.maneuver && step.maneuver.type;
+                    const mod = step.maneuver && step.maneuver.modifier;
+                    let icon, text;
+                    if (type === 'depart') {
+                        icon = '↑'; text = 'Head out';
+                    } else if (type === 'arrive') {
+                        icon = '★'; text = 'Arrive at destination';
+                    } else if (type === 'turn' || type === 'new name' || type === 'continue' || type === 'merge' || type === 'on ramp' || type === 'off ramp' || type === 'fork') {
+                        if (mod === 'left') { icon = '↰'; text = 'Turn left'; }
+                        else if (mod === 'right') { icon = '↱'; text = 'Turn right'; }
+                        else if (mod === 'slight left') { icon = '↖'; text = 'Keep slightly left'; }
+                        else if (mod === 'slight right') { icon = '↗'; text = 'Keep slightly right'; }
+                        else if (mod === 'sharp left') { icon = '⇦'; text = 'Sharp left'; }
+                        else if (mod === 'sharp right') { icon = '⇨'; text = 'Sharp right'; }
+                        else if (mod === 'straight') { icon = '↑'; text = 'Continue straight'; }
+                        else if (mod === 'uturn') { icon = '↩'; text = 'Make a U-turn'; }
+                        else { icon = '→'; text = type === 'merge' ? 'Merge' : 'Continue'; }
+                    } else if (type === 'roundabout' || type === 'rotary') {
+                        icon = '↻'; text = 'Enter roundabout';
+                    } else {
+                        icon = '→'; text = 'Continue';
+                    }
+                    steps.push({
+                        icon,
+                        text,
+                        road: step.name || '',
+                        distance: step.distance,     // meters to next step
+                        duration: step.duration
+                    });
+                });
+            });
+            return steps;
+        }
+
+        function fmtDistance(meters) {
+            if (meters == null) return '';
+            const mi = meters / 1609.344;
+            if (mi < 0.1) return `${Math.round(meters * 3.28084)} ft`;
+            return `${mi.toFixed(1)} mi`;
+        }
+        function fmtDuration(seconds) {
+            if (seconds == null) return '';
+            const mins = Math.round(seconds / 60);
+            if (mins < 60) return `${mins} min`;
+            return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+        }
+
+        function App() {
+            const [jobs, setJobs] = useState(() => {
+                const savedJobs = localStorage.getItem('garden_goats_jobs');
+                return savedJobs ? JSON.parse(savedJobs) : FALLBACK_JOBS;
+            });
+            const [routeList, setRouteList] = useState([]);
+            const fileInputRef = useRef(null);
+            const [importStatus, setImportStatus] = useState(null);
+            
+            const [isTracking, setIsTracking] = useState(false);
+            const [totalMileage, setTotalMileage] = useState(0);
+            const lastPosition = useRef(null);
+            const watchId = useRef(null);
+
+            useEffect(() => {
+                localStorage.setItem('garden_goats_jobs', JSON.stringify(jobs));
+            }, [jobs]);
+
+            // ── REX dashboard sync bridge ──────────────────────────────────
+            // When served from the REX dashboard (/dispatch), dispatch data is
+            // mirrored to the server (REX data/dispatch_state.json) so jobs and
+            // completion history survive browser cache clears and are shared
+            // across devices. Standalone mode (goats-dispatch/server.py) has no
+            // /api/dispatch/* endpoints, so sync silently stays off.
+            const rexSync = useRef({ enabled: false, timer: null, skipPush: false });
+
+            const rexPush = useCallback((state) => {
+                if (!rexSync.current.enabled) return;
+                fetch('/api/dispatch/save', {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ state }),
+                }).catch(() => {});
+            }, []);
+
+            // Probe once on mount; if the REX endpoints exist, pull the server
+            // copy (it wins by id when present, so a fresh device picks up the hub).
+            useEffect(() => {
+                let cancelled = false;
+                (async () => {
+                    try {
+                        const r = await fetch('/api/dispatch/load', { credentials: 'include' });
+                        if (cancelled || !r.ok) return; // standalone, locked, or offline
+                        const d = await r.json();
+                        if (cancelled || !d || !d.ok) return;
+                        rexSync.current.enabled = true;
+                        const remote = d.state || {};
+                        const hasRemote = (Array.isArray(remote.jobs) && remote.jobs.length)
+                            || (Array.isArray(remote.routeList) && remote.routeList.length);
+                        if (hasRemote) {
+                            rexSync.current.skipPush = true; // don't echo the pull back
+                        }
+                        if (Array.isArray(remote.jobs) && remote.jobs.length) {
+                            setJobs(prev => {
+                                const map = new Map(prev.map(j => [j.id, j]));
+                                remote.jobs.forEach(j => map.set(j.id, j)); // server wins
+                                return Array.from(map.values());
+                            });
+                        }
+                        if (Array.isArray(remote.routeList) && remote.routeList.length) {
+                            setRouteList(remote.routeList);
+                        }
+                        // Fresh/empty server: seed it with our local copy once so
+                        // data isn't stuck only in this browser.
+                        if (!hasRemote) {
+                            rexPush({ jobs, routeList, savedAt: new Date().toISOString() });
+                        }
+                    } catch (e) {
+                        // no network or endpoints missing — stay local
+                    }
+                })();
+                return () => { cancelled = true; };
+            }, []);
+
+            // Debounced push whenever jobs or the route change (transient timer in a ref).
+            useEffect(() => {
+                if (!rexSync.current.enabled) return;
+                if (rexSync.current.skipPush) { rexSync.current.skipPush = false; return; }
+                if (rexSync.current.timer) clearTimeout(rexSync.current.timer);
+                rexSync.current.timer = setTimeout(() => {
+                    rexSync.current.timer = null;
+                    rexPush({ jobs, routeList, savedAt: new Date().toISOString() });
+                }, 800);
+                return () => { if (rexSync.current.timer) clearTimeout(rexSync.current.timer); };
+            }, [jobs, routeList, rexPush]);
+
+            const toggleTracking = () => {
+                if (isTracking) {
+                    navigator.geolocation.clearWatch(watchId.current);
+                    setIsTracking(false);
+                    lastPosition.current = null;
+                } else {
+                    if ("geolocation" in navigator) {
+                        setIsTracking(true);
+                        watchId.current = navigator.geolocation.watchPosition(
+                            (position) => {
+                                const { latitude, longitude } = position.coords;
+                                if (lastPosition.current) {
+                                    const dist = calculateDistance(
+                                        lastPosition.current.lat, lastPosition.current.lon,
+                                        latitude, longitude
+                                    );
+                                    if (dist > 0.01) {
+                                        setTotalMileage(prev => prev + dist);
+                                        lastPosition.current = { lat: latitude, lon: longitude };
+                                    }
+                                } else {
+                                    lastPosition.current = { lat: latitude, lon: longitude };
+                                }
+                            },
+                            (error) => console.error("GPS Error:", error),
+                            { enableHighAccuracy: true, maximumAge: 10000, timeout: 5000 }
+                        );
+                    } else {
+                        alert("Geolocation is not supported by your browser.");
+                    }
+                }
+            };
+
+            const toggleJobInRoute = (job) => {
+                if (routeList.some(r => r.id === job.id)) {
+                    setRouteList(routeList.filter(r => r.id !== job.id));
+                } else {
+                    setRouteList([...routeList, job]);
+                }
+            };
+
+            // Mark a job as completed and remove from route
+            const completeJob = (job) => {
+                const now = new Date();
+                const dateStr = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                const timestamp = now.getTime();
+                const completionEntry = { date: dateStr, timestamp: timestamp };
+
+                setJobs(prev => prev.map(j => {
+                    if (j.id === job.id) {
+                        return {
+                            ...j,
+                            lastJob: dateStr,
+                            completedHistory: [...(j.completedHistory || []), completionEntry]
+                        };
+                    }
+                    return j;
+                }));
+
+                // Remove from active route
+                setRouteList(prev => prev.filter(r => r.id !== job.id));
+            };
+
+            // Undo the last completion for a job
+            const undoLastCompletion = (job) => {
+                if (!job.completedHistory || job.completedHistory.length === 0) return;
+                const newHistory = job.completedHistory.slice(0, -1);
+                const newLastJob = newHistory.length > 0
+                    ? newHistory[newHistory.length - 1].date
+                    : 'No jobs completed';
+
+                setJobs(prev => prev.map(j => {
+                    if (j.id === job.id) {
+                        return {
+                            ...j,
+                            lastJob: newLastJob,
+                            completedHistory: newHistory
+                        };
+                    }
+                    return j;
+                }));
+            };
+
+            // Tab state for right panel
+            const [rightTab, setRightTab] = useState('route');
+            
+            // GPS position state
+            const [gpsPosition, setGpsPosition] = useState(null);
+            const [geocodeCache, setGeocodeCache] = useState(() => getGeocodeCache());
+
+            // Watch GPS position for map
+            useEffect(() => {
+                let watchId = null;
+                if ("geolocation" in navigator && rightTab === 'map') {
+                    watchId = navigator.geolocation.watchPosition(
+                        (position) => {
+                            setGpsPosition({ lat: position.coords.latitude, lng: position.coords.longitude });
+                        },
+                        (error) => console.error('Map GPS Error:', error),
+                        { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
+                    );
+                }
+                return () => {
+                    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+                };
+            }, [rightTab]);
+            const [isOptimizing, setIsOptimizing] = useState(false);
+            const [optimizeStatus, setOptimizeStatus] = useState(null);
+
+            const taxDeduction = (totalMileage * 0.76).toFixed(2);
+
+            // Optimize route by geocoding and sorting by proximity
+            const optimizeRouteHandler = async () => {
+                if (routeList.length < 2) {
+                    setOptimizeStatus({ type: 'error', message: 'Need at least 2 stops to optimize.' });
+                    return;
+                }
+                setIsOptimizing(true);
+                setOptimizeStatus({ type: 'info', message: 'Geocoding addresses...' });
+
+                try {
+                    // Geocode all addresses that don't have cached coordinates
+                    const geocoded = await Promise.all(
+                        routeList.map(async (job) => {
+                            const coords = await geocodeAddress(job.address);
+                            return { ...job, _coords: coords };
+                        })
+                    );
+
+                    const withCoords = geocoded.filter(j => j._coords);
+                    const withoutCoords = geocoded.filter(j => !j._coords);
+
+                    if (withCoords.length < 2) {
+                        setOptimizeStatus({ type: 'error', message: 'Could not geocode enough addresses. Try again with internet.' });
+                        setIsOptimizing(false);
+                        return;
+                    }
+
+                    const optimized = optimizeRoute(geocoded);
+                    // Remove _coords before setting to state
+                    const clean = optimized.map(({ _coords, ...rest }) => rest);
+                    setRouteList(clean);
+
+                    const skipped = withoutCoords.length;
+                    const msg = skipped > 0
+                        ? `Route optimized! ${withCoords.length} stops reordered, ${skipped} placed at end (couldn't geocode).`
+                        : `Route optimized! All ${withCoords.length} stops reordered by proximity.`;
+                    setOptimizeStatus({ type: 'success', message: msg });
+                } catch (err) {
+                    setOptimizeStatus({ type: 'error', message: 'Optimization failed. Check your connection.' });
+                }
+                setIsOptimizing(false);
+            };
+
+            // Calculate stats for today
+            const todayStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+            const completedToday = jobs.filter(j =>
+                j.completedHistory && j.completedHistory.some(h => h.date === todayStr)
+            ).length;
+
+            // Export all properties as CSV (includes completion history)
+            const exportAllProperties = () => {
+                const header = toCSVRow(['id', 'address', 'service', 'lastJob', 'totalCompletions', 'completionHistory']);
+                const rows = jobs.map(j => {
+                    const history = (j.completedHistory || []).map(h => h.date).join('; ');
+                    const count = (j.completedHistory || []).length;
+                    return toCSVRow([j.id, j.address, j.service, j.lastJob, count, history]);
+                });
+                const csv = [header, ...rows].join('\n');
+                downloadCSV('garden-goats-properties.csv', csv);
+            };
+
+            // Export active route manifest as CSV
+            const exportRouteManifest = () => {
+                if (routeList.length === 0) {
+                    alert('No stops in your active route to export.');
+                    return;
+                }
+                const header = toCSVRow(['stop_number', 'id', 'address', 'service', 'lastJob']);
+                const rows = routeList.map((j, idx) => toCSVRow([idx + 1, j.id, j.address, j.service, j.lastJob]));
+                const csv = [header, ...rows].join('\n');
+                const date = new Date().toISOString().slice(0, 10);
+                downloadCSV(`route-manifest-${date}.csv`, csv);
+            };
+
+            // Import properties from CSV
+            const importCSV = useCallback((event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const rows = parseCSV(e.target.result);
+                        if (rows.length === 0) {
+                            setImportStatus({ type: 'error', message: 'No valid rows found in CSV file.' });
+                            return;
+                        }
+                        // Try to match common column name variations
+                        const maxId = jobs.reduce((max, j) => Math.max(max, j.id), 0);
+                        const imported = rows.map((row, idx) => {
+                            const address = row.address || row.Address || row.property || row.Property || row.name || row.Name || '';
+                            const service = row.service || row.Service || row.jobtype || row.JobType || row.job_type || row.Job_Type || '';
+                            const lastJob = row.lastjob || row.lastJob || row.last_job || row.LastJob || row.lastcompleted || row.LastCompleted || row.last_completed || 'No jobs completed';
+                            return {
+                                id: maxId + idx + 1,
+                                address: address,
+                                service: service,
+                                lastJob: lastJob || 'No jobs completed'
+                            };
+                        }).filter(j => j.address.trim() !== '');
+
+                        if (imported.length === 0) {
+                            setImportStatus({ type: 'error', message: 'No rows with an address found. Make sure your CSV has an "address" column.' });
+                            return;
+                        }
+
+                        const proceed = window.confirm(
+                            `About to import ${imported.length} properties.\n\nThis will add them to your existing ${jobs.length} properties.\nContinue?`
+                        );
+                        if (proceed) {
+                            setJobs(prev => [...prev, ...imported]);
+                            setImportStatus({ type: 'success', message: `Successfully imported ${imported.length} properties.` });
+                        } else {
+                            setImportStatus({ type: 'info', message: 'Import cancelled.' });
+                        }
+                    } catch (err) {
+                        setImportStatus({ type: 'error', message: 'Failed to parse CSV file. Please check the format.' });
+                    }
+                };
+                reader.readAsText(file);
+                // Reset the input so the same file can be re-imported
+                event.target.value = '';
+            }, [jobs]);
+
+            // ---- Maps import state ----
+            const [mapsLink, setMapsLink] = useState('');
+            const [showMapsImport, setShowMapsImport] = useState(false);
+            const [mapsStatus, setMapsStatus] = useState(null);
+
+            // Add a new property, optionally with known coordinates
+            const addMapsProperty = useCallback((address, coords) => {
+                const maxId = jobs.reduce((max, j) => Math.max(max, j.id), 0);
+                const newJob = {
+                    id: maxId + 1,
+                    address: address,
+                    service: 'From Maps',
+                    lastJob: 'No jobs completed',
+                    completedHistory: []
+                };
+                setJobs(prev => [...prev, newJob]);
+                if (coords) {
+                    const cache = getGeocodeCache();
+                    cache[address.toLowerCase().trim()] = coords;
+                    setGeocodeCache(cache);
+                }
+                return newJob;
+            }, [jobs]);
+
+            // Import from a Google Maps / Apple Maps link or a saved-places JSON blob
+            const handleMapsImport = async () => {
+                const raw = mapsLink.trim();
+                if (!raw) return;
+
+                // Try JSON (Google Takeout saved-places / custom list) first
+                if (raw.startsWith('[')) {
+                    try {
+                        const arr = JSON.parse(raw);
+                        const items = arr.filter(p => p && (p.title || p.address));
+                        if (items.length > 0) {
+                            let maxId = jobs.reduce((max, j) => Math.max(max, j.id), 0);
+                            const cache = getGeocodeCache();
+                            const added = items.map((p, i) => {
+                                const addr = p.address || p.title;
+                                if (p.latitude !== undefined && p.longitude !== undefined) {
+                                    cache[addr.toLowerCase().trim()] = { lat: p.latitude, lng: p.longitude };
+                                }
+                                return {
+                                    id: maxId + i + 1,
+                                    address: addr,
+                                    service: p.service || 'From Maps',
+                                    lastJob: 'No jobs completed',
+                                    completedHistory: []
+                                };
+                            });
+                            setJobs(prev => [...prev, ...added]);
+                            setGeocodeCache(cache);
+                            setMapsStatus({ type: 'success', message: `Imported ${added.length} locations from Maps data.` });
+                            setMapsLink('');
+                            return;
+                        }
+                    } catch (e) {
+                        // fall through to link parsing
+                    }
+                }
+
+                const parsed = parseMapsLink(raw);
+                if (!parsed) {
+                    setMapsStatus({ type: 'error', message: 'Not a valid Google/Apple Maps link.' });
+                    return;
+                }
+                if (parsed.short) {
+                    setMapsStatus({ type: 'error', message: 'Google short links need to be expanded. Copy the full share link instead.' });
+                    return;
+                }
+
+                setMapsStatus({ type: 'info', message: 'Resolving location…' });
+                let address = parsed.label;
+                let coords = (parsed.lat !== null && parsed.lng !== null) ? { lat: parsed.lat, lng: parsed.lng } : null;
+                if (!address && coords) {
+                    address = await reverseGeocode(coords.lat, coords.lng);
+                }
+                if (!address) {
+                    setMapsStatus({ type: 'error', message: 'Could not determine an address. Try a full share link with coordinates.' });
+                    return;
+                }
+                addMapsProperty(address, coords);
+                setMapsStatus({ type: 'success', message: `Added ${address}` });
+                setMapsLink('');
+                setShowMapsImport(false);
+            };
+
+            // Tap-to-add: fired from the map when the user drops a pin
+            const handleAddFromMap = useCallback(async (lat, lng) => {
+                setMapsStatus({ type: 'info', message: 'Finding address…' });
+                const address = await reverseGeocode(lat, lng);
+                const job = addMapsProperty(address, { lat, lng });
+                setMapsStatus({ type: 'success', message: `Added ${address}` });
+                setTimeout(() => setMapsStatus(null), 3500);
+            }, [addMapsProperty]);
+
+            // ---- Watch mode ----
+            const [watchMode, setWatchMode] = useState(
+                window.innerWidth <= 300 || new URLSearchParams(window.location.search).get('watch') === '1'
+            );
+            // ---- Navigation mode ----
+            const [navMode, setNavMode] = useState(false);
+            useEffect(() => {
+                const onResize = () => {
+                    if (window.innerWidth <= 300) setWatchMode(true);
+                };
+                window.addEventListener('resize', onResize);
+                return () => window.removeEventListener('resize', onResize);
+            }, []);
+
+            // Service rates for earnings calculation
+            const SERVICE_RATES = {
+                'Weekly Lawn Mowing': 45,
+                'Every 2 Weeks Lawn Mowing': 55,
+                'Weekly Lawn Care Bundle': 65,
+                'Every 2 Weeks Lawn Care Bundle': 75,
+                'One time Fall Clean Up': 120,
+                'One time Spring Clean Up': 110,
+                'default': 50
+            };
+
+            const getJobRate = (service) => {
+                return SERVICE_RATES[service] || SERVICE_RATES['default'];
+            };
+
+            // Calculate weekly stats
+            const weeklyStats = useMemo(() => {
+                const now = new Date();
+                const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+                const weeklyData = [];
+
+                // Get last 7 days
+                for (let i = 6; i >= 0; i--) {
+                    const date = new Date(now);
+                    date.setDate(date.getDate() - i);
+                    const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                    const dayName = days[date.getDay()];
+                    const isToday = i === 0;
+
+                    // Count completions for this day
+                    let completions = 0;
+                    let earnings = 0;
+                    jobs.forEach(job => {
+                        if (job.completedHistory) {
+                            const dayCompletions = job.completedHistory.filter(h => h.date === dateStr);
+                            completions += dayCompletions.length;
+                            earnings += dayCompletions.length * getJobRate(job.service);
+                        }
+                    });
+
+                    weeklyData.push({
+                        day: dayName,
+                        date: dateStr,
+                        completions,
+                        earnings,
+                        isToday
+                    });
+                }
+
+                return weeklyData;
+            }, [jobs]);
+
+            // Compute the scheduling state for every job
+            const scheduleData = useMemo(() => {
+                return jobs.map(job => ({
+                    job,
+                    ...getJobSchedule(job)
+                }));
+            }, [jobs]);
+
+            const dueCount = scheduleData.filter(s => s.status === 'overdue' || s.status === 'dueToday').length;
+            const thisWeekCount = scheduleData.filter(s => s.status === 'thisWeek').length;
+
+            // Add all overdue + due-today jobs to the active route
+            const addDueJobsToRoute = () => {
+                const dueJobs = scheduleData
+                    .filter(s => s.status === 'overdue' || s.status === 'dueToday')
+                    .map(s => s.job)
+                    .filter(job => !routeList.some(r => r.id === job.id));
+                if (dueJobs.length === 0) return;
+                setRouteList(prev => [...prev, ...dueJobs]);
+                setRightTab('route');
+            };
+
+            // Calculate summary stats
+            const statsSummary = useMemo(() => {
+                const totalCompletions = jobs.reduce((sum, j) => sum + (j.completedHistory?.length || 0), 0);
+                const thisWeekCompletions = weeklyStats.reduce((sum, d) => sum + d.completions, 0);
+                const thisWeekEarnings = weeklyStats.reduce((sum, d) => sum + d.earnings, 0);
+                const todayCompletions = weeklyStats.find(d => d.isToday)?.completions || 0;
+                const todayEarnings = weeklyStats.find(d => d.isToday)?.earnings || 0;
+
+                // Find best day this week
+                const bestDay = weeklyStats.reduce((best, d) => d.completions > best.completions ? d : best, weeklyStats[0]);
+
+                // Average completions per day (last 7 days)
+                const avgPerDay = (thisWeekCompletions / 7).toFixed(1);
+
+                // Unique properties serviced this week
+                const uniquePropertiesThisWeek = new Set();
+                jobs.forEach(job => {
+                    if (job.completedHistory) {
+                        job.completedHistory.forEach(h => {
+                            const dayData = weeklyStats.find(d => d.date === h.date);
+                            if (dayData) uniquePropertiesThisWeek.add(job.id);
+                        });
+                    }
+                });
+
+                return {
+                    totalCompletions,
+                    thisWeekCompletions,
+                    thisWeekEarnings,
+                    todayCompletions,
+                    todayEarnings,
+                    bestDay,
+                    avgPerDay,
+                    uniquePropertiesThisWeek: uniquePropertiesThisWeek.size,
+                    mileage: totalMileage,
+                    taxDeduction: (totalMileage * 0.76).toFixed(2)
+                };
+            }, [jobs, weeklyStats, totalMileage]);
+
+            // StatsView component
+            const StatsView = () => {
+                const maxCompletions = Math.max(...weeklyStats.map(d => d.completions), 1);
+                const chartHeight = 120;
+
+                return (
+                    <div className="space-y-4">
+                        {/* Today's Summary Cards */}
+                        <div className="grid grid-cols-2 gap-2">
+                            <div className="bg-gradient-to-br from-emerald-500/20 to-emerald-600/10 border border-emerald-500/30 rounded-lg p-3">
+                                <p className="text-[10px] text-emerald-400 uppercase tracking-wider font-bold">Today's Jobs</p>
+                                <p className="text-2xl font-bold text-emerald-400 mt-1">{statsSummary.todayCompletions}</p>
+                                <p className="text-[10px] text-slate-500">completed</p>
+                            </div>
+                            <div className="bg-gradient-to-br from-amber-500/20 to-amber-600/10 border border-amber-500/30 rounded-lg p-3">
+                                <p className="text-[10px] text-amber-400 uppercase tracking-wider font-bold">Today's Earnings</p>
+                                <p className="text-2xl font-bold text-amber-400 mt-1">${statsSummary.todayEarnings}</p>
+                                <p className="text-[10px] text-slate-500">estimated</p>
+                            </div>
+                            <div className="bg-gradient-to-br from-blue-500/20 to-blue-600/10 border border-blue-500/30 rounded-lg p-3">
+                                <p className="text-[10px] text-blue-400 uppercase tracking-wider font-bold">Today's Miles</p>
+                                <p className="text-2xl font-bold text-blue-400 mt-1">{totalMileage.toFixed(1)}</p>
+                                <p className="text-[10px] text-slate-500">${statsSummary.taxDeduction} deduction</p>
+                            </div>
+                            <div className="bg-gradient-to-br from-violet-500/20 to-violet-600/10 border border-violet-500/30 rounded-lg p-3">
+                                <p className="text-[10px] text-violet-400 uppercase tracking-wider font-bold">Properties</p>
+                                <p className="text-2xl font-bold text-violet-400 mt-1">{statsSummary.uniquePropertiesThisWeek}</p>
+                                <p className="text-[10px] text-slate-500">serviced this week</p>
+                            </div>
+                        </div>
+
+                        {/* Weekly Trends Chart */}
+                        <div className="bg-slate-950 border border-slate-800 rounded-lg p-3">
+                            <div className="flex justify-between items-center mb-3">
+                                <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wide">This Week</h3>
+                                <span className="text-[10px] text-slate-500">{statsSummary.thisWeekCompletions} total jobs • ${statsSummary.thisWeekEarnings} earned</span>
+                            </div>
+                            
+                            {/* Bar Chart */}
+                            <div className="flex items-end justify-between gap-1" style={{ height: `${chartHeight + 30}px` }}>
+                                {weeklyStats.map((day, idx) => (
+                                    <div key={idx} className="flex flex-col items-center flex-1">
+                                        {/* Bar */}
+                                        <div className="w-full flex justify-center">
+                                            <div 
+                                                className={`w-full max-w-[32px] rounded-t transition-all duration-500 ${day.isToday ? 'bg-emerald-500' : day.completions > 0 ? 'bg-emerald-500/60' : 'bg-slate-800'}`}
+                                                style={{ 
+                                                    height: `${day.completions > 0 ? Math.max((day.completions / maxCompletions) * chartHeight, 8) : 4}px`
+                                                }}
+                                                title={`${day.day}: ${day.completions} jobs, $${day.earnings}`}
+                                            ></div>
+                                        </div>
+                                        {/* Label */}
+                                        <p className={`text-[10px] mt-1 font-medium ${day.isToday ? 'text-emerald-400' : 'text-slate-500'}`}>{day.day}</p>
+                                        {/* Count */}
+                                        <p className={`text-[9px] ${day.isToday ? 'text-emerald-400 font-bold' : 'text-slate-600'}`}>{day.completions}</p>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* Weekly Summary */}
+                        <div className="bg-slate-950 border border-slate-800 rounded-lg p-3">
+                            <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wide mb-3">Weekly Summary</h3>
+                            <div className="space-y-2">
+                                <div className="flex justify-between items-center">
+                                    <span className="text-xs text-slate-400">Total Completions</span>
+                                    <span className="text-sm font-bold text-white">{statsSummary.totalCompletions}</span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                    <span className="text-xs text-slate-400">Avg. Jobs/Day (7d)</span>
+                                    <span className="text-sm font-bold text-white">{statsSummary.avgPerDay}</span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                    <span className="text-xs text-slate-400">Best Day This Week</span>
+                                    <span className="text-sm font-bold text-emerald-400">{statsSummary.bestDay.day} ({statsSummary.bestDay.completions})</span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                    <span className="text-xs text-slate-400">Week Earnings</span>
+                                    <span className="text-sm font-bold text-amber-400">${statsSummary.thisWeekEarnings}</span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                    <span className="text-xs text-slate-400">Tax Deduction (7d)</span>
+                                    <span className="text-sm font-bold text-emerald-400">${(statsSummary.mileage * 0.76).toFixed(2)}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Service Breakdown */}
+                        <div className="bg-slate-950 border border-slate-800 rounded-lg p-3">
+                            <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wide mb-3">Service Breakdown</h3>
+                            <div className="space-y-2">
+                                {(() => {
+                                    const serviceCounts = {};
+                                    jobs.forEach(job => {
+                                        const count = job.completedHistory?.length || 0;
+                                        if (count > 0) {
+                                            serviceCounts[job.service] = (serviceCounts[job.service] || 0) + count;
+                                        }
+                                    });
+                                    const sorted = Object.entries(serviceCounts).sort((a, b) => b[1] - a[1]);
+                                    const maxCount = sorted.length > 0 ? sorted[0][1] : 1;
+                                    
+                                    if (sorted.length === 0) {
+                                        return <p className="text-xs text-slate-500 text-center py-2">No completions yet</p>;
+                                    }
+
+                                    return sorted.map(([service, count], idx) => (
+                                        <div key={idx} className="space-y-1">
+                                            <div className="flex justify-between items-center">
+                                                <span className="text-[11px] text-slate-300 truncate flex-1">{service}</span>
+                                                <span className="text-[11px] text-slate-400 ml-2">{count} jobs • ${count * getJobRate(service)}</span>
+                                            </div>
+                                            <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                                                <div 
+                                                    className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full transition-all duration-500"
+                                                    style={{ width: `${(count / maxCount) * 100}%` }}
+                                                ></div>
+                                            </div>
+                                        </div>
+                                    ));
+                                })()}
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
+            // ScheduleView component
+            const ScheduleView = () => {
+                const groups = [
+                    { key: 'overdue', title: 'Overdue', desc: 'past due date', chip: 'bg-red-500/15 text-red-400 border-red-500/40' },
+                    { key: 'dueToday', title: 'Due Today', desc: 'needs service now', chip: 'bg-amber-500/15 text-amber-400 border-amber-500/40' },
+                    { key: 'thisWeek', title: 'This Week', desc: 'due within 7 days', chip: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/40' },
+                    { key: 'upcoming', title: 'Next 30 Days', desc: 'due within a month', chip: 'bg-blue-500/15 text-blue-400 border-blue-500/40' },
+                    { key: 'later', title: 'Later', desc: 'over a month out', chip: 'bg-slate-800 text-slate-400 border-slate-700' },
+                    { key: 'once', title: 'One-time', desc: 'no recurrence', chip: 'bg-slate-800 text-slate-500 border-slate-700' },
+                    { key: 'unknown', title: 'Unknown', desc: 'date not recognized', chip: 'bg-orange-500/15 text-orange-400 border-orange-500/40' }
+                ];
+
+                const freqLabel = (freqDays) => {
+                    if (freqDays === 7) return 'Weekly';
+                    if (freqDays === 14) return 'Bi-weekly';
+                    if (freqDays === 30) return 'Monthly';
+                    return 'One-time';
+                };
+
+                return (
+                    <div className="space-y-4">
+                        {/* Header with bulk action */}
+                        <div className="flex items-center justify-between gap-2">
+                            <div>
+                                <p className="text-xs font-bold text-slate-300 uppercase tracking-wide">Schedule</p>
+                                <p className="text-[10px] text-slate-500 mt-0.5">{dueCount} due now • {thisWeekCount} this week</p>
+                            </div>
+                            <button
+                                onClick={addDueJobsToRoute}
+                                disabled={dueCount === 0}
+                                className={`text-xs px-3 py-2 rounded-md border transition font-bold whitespace-nowrap ${dueCount === 0 ? 'bg-slate-800 border-slate-800 text-slate-600 cursor-not-allowed' : 'bg-emerald-600 border-emerald-500 text-white hover:bg-emerald-500 shadow'}`}
+                                title="Add all overdue and due-today jobs to your route"
+                            >
+                                + Add {dueCount} Due
+                            </button>
+                        </div>
+
+                        {groups.map(group => {
+                            const items = scheduleData.filter(s => s.status === group.key);
+                            if (items.length === 0) return null;
+                            return (
+                                <div key={group.key}>
+                                    <div className="flex items-center justify-between mb-2">
+                                        <h4 className={`text-[10px] font-bold uppercase tracking-wider ${group.chip.split(' ')[1] || 'text-slate-400'}`}>
+                                            {group.title}
+                                        </h4>
+                                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${group.chip}`}>{items.length}</span>
+                                    </div>
+                                    <div className="space-y-2">
+                                        {items.map(({ job, nextDue, freqDays, daysOverdue }) => {
+                                            const inRoute = routeList.some(r => r.id === job.id);
+                                            const dueLabel = group.key === 'once'
+                                                ? 'One-time service'
+                                                : group.key === 'unknown'
+                                                    ? 'Unrecognized date — update lastJob'
+                                                    : group.key === 'overdue'
+                                                        ? `${daysOverdue}d overdue • next ${fmtShort(nextDue)}`
+                                                        : group.key === 'dueToday'
+                                                            ? 'Due today'
+                                                            : `Due ${fmtShort(nextDue)}`;
+                                            return (
+                                                <div key={job.id} className="p-3 bg-slate-950 border border-slate-800 rounded-lg">
+                                                    <div className="flex items-start justify-between gap-2">
+                                                        <div className="min-w-0">
+                                                            <p className="font-semibold text-sm text-slate-200 truncate">{job.address}</p>
+                                                            <p className="text-[10px] text-slate-500 mt-0.5 truncate">{job.service}</p>
+                                                            <p className={`text-[10px] mt-1 font-medium ${group.key === 'overdue' ? 'text-red-400' : group.key === 'dueToday' ? 'text-amber-400' : 'text-slate-500'}`}>
+                                                                {dueLabel}
+                                                            </p>
+                                                        </div>
+                                                        <div className="flex flex-col items-end gap-1.5 shrink-0">
+                                                            <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-mono ${group.chip}`}>
+                                                                {freqLabel(freqDays)}
+                                                            </span>
+                                                            <button
+                                                                onClick={() => toggleJobInRoute(job)}
+                                                                className={`text-[10px] px-2 py-1 rounded-md border transition font-medium ${inRoute ? 'bg-slate-900 border-slate-700 text-slate-400 hover:text-red-400' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'}`}
+                                                            >
+                                                                {inRoute ? 'In Route' : '+ Route'}
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            );
+                        })}
+
+                        {scheduleData.length === 0 && (
+                            <div className="text-center py-12 border border-dashed border-slate-800 rounded-lg">
+                                <p className="text-xs text-slate-500">No jobs scheduled.</p>
+                                <p className="text-[10px] text-slate-600 mt-1">Import properties with recurring services to build a schedule.</p>
+                            </div>
+                        )}
+                    </div>
+                );
+            };
+
+            // MapView component
+            const MapView = ({ route, gpsPos, geocodeCache, onAddFromMap }) => {
+                const mapContainerRef = useRef(null);
+                const mapRef = useRef(null);
+                const markersRef = useRef([]);
+                const polylineRef = useRef(null);
+                const gpsMarkerRef = useRef(null);
+                const [mapReady, setMapReady] = useState(false);
+                const [addPinMode, setAddPinMode] = useState(false);
+                const pinMarkerRef = useRef(null);
+
+                // Initialize map
+                useEffect(() => {
+                    if (mapContainerRef.current && !mapRef.current) {
+                        const map = L.map(mapContainerRef.current, {
+                            zoomControl: false,
+                            attributionControl: true
+                        }).setView([44.9778, -93.2650], 13);
+
+                        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                            attribution: '&copy; OpenStreetMap',
+                            maxZoom: 19
+                        }).addTo(map);
+
+                        L.control.zoom({ position: 'topright' }).addTo(map);
+                        mapRef.current = map;
+                        setMapReady(true);
+                    }
+                    return () => {
+                        if (mapRef.current) {
+                            mapRef.current.remove();
+                            mapRef.current = null;
+                        }
+                    };
+                }, []);
+
+                // Update route markers
+                useEffect(() => {
+                    if (!mapRef.current || !mapReady) return;
+
+                    // Clear existing markers
+                    markersRef.current.forEach(m => m.remove());
+                    markersRef.current = [];
+                    if (polylineRef.current) {
+                        polylineRef.current.remove();
+                        polylineRef.current = null;
+                    }
+
+                    const coords = [];
+
+                    route.forEach((job, idx) => {
+                        const cached = geocodeCache[job.address.toLowerCase().trim()];
+                        if (cached) {
+                            const isStart = idx === 0;
+                            const isEnd = idx === route.length - 1 && route.length > 1;
+                            const markerColor = isStart ? '#10b981' : isEnd ? '#ef4444' : '#8b5cf6';
+                            const label = isStart ? 'START' : isEnd ? 'END' : `${idx + 1}`;
+
+                            const icon = L.divIcon({
+                                className: 'custom-marker',
+                                html: `<div style="background:${markerColor};color:white;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:11px;border:2px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.4);">${label}</div>`,
+                                iconSize: [28, 28],
+                                iconAnchor: [14, 14]
+                            });
+
+                            const marker = L.marker([cached.lat, cached.lng], { icon })
+                                .addTo(mapRef.current)
+                                .bindPopup(`<b>#${idx + 1}</b><br><b>${job.address}</b><br><i>${job.service}</i><br><a href="https://www.google.com/maps/dir/?api=1&destination=${cached.lat},${cached.lng}" target="_blank" rel="noopener" style="color:#10b981;font-size:11px;">Open in Google Maps ↗</a><br><a href="https://maps.apple.com/?daddr=${cached.lat},${cached.lng}" target="_blank" rel="noopener" style="color:#38bdf8;font-size:11px;">Open in Apple Maps ↗</a>`);
+                            markersRef.current.push(marker);
+                            coords.push([cached.lat, cached.lng]);
+                        }
+                    });
+
+                    // Draw polyline
+                    if (coords.length > 1) {
+                        polylineRef.current = L.polyline(coords, {
+                            color: '#10b981',
+                            weight: 3,
+                            opacity: 0.7,
+                            dashArray: '8, 8'
+                        }).addTo(mapRef.current);
+                    }
+
+                    // Fit bounds
+                    if (coords.length > 0) {
+                        const bounds = L.latLngBounds(coords);
+                        if (gpsPos) bounds.extend([gpsPos.lat, gpsPos.lng]);
+                        mapRef.current.fitBounds(bounds, { padding: [40, 40] });
+                    }
+                }, [route, geocodeCache, gpsPos, mapReady]);
+
+                // Update GPS marker
+                useEffect(() => {
+                    if (!mapRef.current || !gpsPos) return;
+
+                    if (gpsMarkerRef.current) {
+                        gpsMarkerRef.current.setLatLng([gpsPos.lat, gpsPos.lng]);
+                    } else {
+                        const gpsIcon = L.divIcon({
+                            className: 'gps-marker',
+                            html: `<div style="width:16px;height:16px;background:#3b82f6;border:3px solid white;border-radius:50%;box-shadow:0 0 12px rgba(59,130,246,0.6);animation:pulse 2s infinite;"></div>`,
+                            iconSize: [16, 16],
+                            iconAnchor: [8, 8]
+                        });
+                        gpsMarkerRef.current = L.marker([gpsPos.lat, gpsPos.lng], { icon: gpsIcon })
+                            .addTo(mapRef.current)
+                            .bindPopup('📍 Your Location');
+                    }
+                }, [gpsPos]);
+
+                // Invalidate size on tab switch
+                useEffect(() => {
+                    if (mapRef.current && rightTab === 'map') {
+                        setTimeout(() => mapRef.current.invalidateSize(), 100);
+                    }
+                }, [rightTab]);
+
+                // Tap-to-add pin mode: clicking the map reverse-geocodes and adds a property
+                useEffect(() => {
+                    const map = mapRef.current;
+                    if (!map || !mapReady || !addPinMode) return;
+                    const handleClick = async (e) => {
+                        const { lat, lng } = e.latlng;
+                        // Show a temp pin immediately
+                        if (pinMarkerRef.current) pinMarkerRef.current.remove();
+                        pinMarkerRef.current = L.circleMarker([lat, lng], {
+                            radius: 8, color: '#38bdf8', weight: 3, fillColor: '#38bdf8', fillOpacity: 0.6
+                        }).addTo(map);
+                        if (onAddFromMap) {
+                            await onAddFromMap(lat, lng);
+                        }
+                        setAddPinMode(false);
+                    };
+                    map.on('click', handleClick);
+                    return () => { map.off('click', handleClick); };
+                }, [addPinMode, mapReady, onAddFromMap]);
+
+                return (
+                    <div className="relative w-full h-full min-h-[60vh] lg:min-h-[70vh] rounded-lg overflow-hidden">
+                        <div ref={mapContainerRef} className="absolute inset-0 z-0"></div>
+                        {!mapReady && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-slate-950 z-10">
+                                <p className="text-sm text-slate-400">Loading map...</p>
+                            </div>
+                        )}
+                        {/* Add-pin button */}
+                        <button
+                            onClick={() => setAddPinMode(v => !v)}
+                            className={`absolute top-3 left-3 z-10 px-3 py-2 rounded-md text-xs font-bold border transition shadow-lg ${addPinMode ? 'bg-sky-600 text-white border-sky-400 animate-pulse' : 'bg-slate-900/90 text-slate-200 border-slate-700 hover:bg-slate-800'}`}
+                            title="Tap the map to add a new property"
+                        >
+                            {addPinMode ? 'Tap map to drop pin…' : '＋ Add from Map'}
+                        </button>
+                        {addPinMode && (
+                            <div className="absolute top-12 left-3 z-10 bg-slate-900/90 backdrop-blur-sm rounded-md px-3 py-1.5 border border-sky-500/40">
+                                <p className="text-[10px] text-sky-300">Tap anywhere to drop a pin and add the location to your database.</p>
+                            </div>
+                        )}
+                        {/* Map legend overlay */}
+                        <div className="absolute bottom-3 left-3 z-10 bg-slate-900/90 backdrop-blur-sm rounded-lg px-3 py-2 border border-slate-700">
+                            <div className="flex items-center gap-3 text-[10px]">
+                                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span> Start</span>
+                                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-violet-500"></span> Stop</span>
+                                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-red-500"></span> End</span>
+                                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-blue-500"></span> GPS</span>
+                            </div>
+                        </div>
+                        {/* No stops message */}
+                        {route.length === 0 && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-slate-950/80 z-10">
+                                <div className="text-center">
+                                    <p className="text-sm text-slate-400">No stops on your route</p>
+                                    <p className="text-xs text-slate-600 mt-1">Add properties from the database to see them on the map</p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                );
+            };
+
+            // NavigationView component — full-screen turn-by-turn driving mode
+            const NavigationView = () => {
+                const mapContainerRef = useRef(null);
+                const mapRef = useRef(null);
+                const routeLineRef = useRef(null);
+                const startMarkerRef = useRef(null);
+                const destMarkerRef = useRef(null);
+                const gpsMarkerRef = useRef(null);
+                const [mapReady, setMapReady] = useState(false);
+                const [gpsPos, setGpsPos] = useState(null);
+                const [routeData, setRouteData] = useState(null);
+                const [instructions, setInstructions] = useState([]);
+                const [navStatus, setNavStatus] = useState(null);
+                const [navLoading, setNavLoading] = useState(false);
+                const [currentStep, setCurrentStep] = useState(1);
+                const [showEndpoint, setShowEndpoint] = useState(false);
+                const [endpoint, setEndpoint] = useState(getOsrmEndpoint());
+                const [navJob, setNavJob] = useState(null);
+
+                const destJob = navJob || (routeList.length > 0 ? routeList[0] : null);
+                const destIdx = destJob ? routeList.findIndex(r => r.id === destJob.id) : -1;
+                const isLastStop = destIdx >= 0 && destIdx >= routeList.length - 1;
+
+                // Watch GPS while nav is open
+                useEffect(() => {
+                    if (!("geolocation" in navigator)) return;
+                    const wid = navigator.geolocation.watchPosition(
+                        (p) => setGpsPos({ lat: p.coords.latitude, lng: p.coords.longitude }),
+                        () => {},
+                        { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
+                    );
+                    return () => navigator.geolocation.clearWatch(wid);
+                }, []);
+
+                // Init map
+                useEffect(() => {
+                    if (mapContainerRef.current && !mapRef.current) {
+                        const map = L.map(mapContainerRef.current, { zoomControl: false, attributionControl: true })
+                            .setView([44.9778, -93.2650], 12);
+                        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                            attribution: '&copy; OpenStreetMap', maxZoom: 19
+                        }).addTo(map);
+                        L.control.zoom({ position: 'topright' }).addTo(map);
+                        mapRef.current = map;
+                        setMapReady(true);
+                    }
+                    return () => {
+                        if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
+                    };
+                }, []);
+
+                // Draw route whenever it changes
+                useEffect(() => {
+                    if (!mapRef.current || !routeData || !mapReady) return;
+
+                    if (routeLineRef.current) routeLineRef.current.remove();
+                    if (startMarkerRef.current) startMarkerRef.current.remove();
+                    if (destMarkerRef.current) destMarkerRef.current.remove();
+
+                    const coords = (routeData.geometry.coordinates || []).map(c => [c[1], c[0]]);
+                    if (coords.length > 0) {
+                        routeLineRef.current = L.polyline(coords, { color: '#38bdf8', weight: 5, opacity: 0.85 }).addTo(mapRef.current);
+                        startMarkerRef.current = L.circleMarker(coords[0], { radius: 7, color: '#10b981', weight: 2, fillColor: '#10b981', fillOpacity: 0.9 }).addTo(mapRef.current);
+                        destMarkerRef.current = L.circleMarker(coords[coords.length - 1], { radius: 8, color: '#ef4444', weight: 2, fillColor: '#ef4444', fillOpacity: 0.9 }).addTo(mapRef.current);
+                        const bounds = L.latLngBounds(coords);
+                        if (gpsPos) bounds.extend([gpsPos.lat, gpsPos.lng]);
+                        mapRef.current.fitBounds(bounds, { padding: [50, 50] });
+                    }
+                }, [routeData, mapReady, gpsPos]);
+
+                // GPS marker
+                useEffect(() => {
+                    if (!mapRef.current || !gpsPos) return;
+                    if (gpsMarkerRef.current) {
+                        gpsMarkerRef.current.setLatLng([gpsPos.lat, gpsPos.lng]);
+                    } else {
+                        const icon = L.divIcon({
+                            className: 'gps-marker',
+                            html: '<div style="width:16px;height:16px;background:#3b82f6;border:3px solid white;border-radius:50%;box-shadow:0 0 12px rgba(59,130,246,0.6);animation:pulse 2s infinite;"></div>',
+                            iconSize: [16, 16], iconAnchor: [8, 8]
+                        });
+                        gpsMarkerRef.current = L.marker([gpsPos.lat, gpsPos.lng], { icon }).addTo(mapRef.current);
+                    }
+                }, [gpsPos]);
+
+                // Build navigation to a given job (origin = current GPS or the previous stop)
+                const buildRoute = useCallback(async (job, originOverride) => {
+                    if (!job) return;
+                    const destCoords = geocodeCache[job.address.toLowerCase().trim()];
+                    if (!destCoords) {
+                        setNavStatus({ type: 'error', message: 'Destination not geocoded yet — run Optimize Route first or go online to geocode it.' });
+                        return;
+                    }
+                    let origin = originOverride || gpsPos;
+                    if (!origin) origin = destCoords;
+                    setNavLoading(true);
+                    setNavStatus({ type: 'info', message: 'Routing…' });
+                    const route = await fetchOsrmRoute(origin, destCoords);
+                    setRouteData(route);
+                    setInstructions(buildInstructions(route));
+                    setCurrentStep(1);
+                    setNavJob(job);
+                    setNavLoading(false);
+                    if (route.offline) {
+                        setNavStatus({ type: 'error', message: 'Offline — using straight-line estimate. Route cache works after one online fetch.' });
+                    } else if (route.cached) {
+                        setNavStatus({ type: 'success', message: 'Loaded cached route (offline-ready).' });
+                    } else {
+                        setNavStatus({ type: 'success', message: 'Route ready — turn-by-turn cached for offline.' });
+                    }
+                }, [geocodeCache, gpsPos]);
+
+                // Auto-build route to the first stop when the map is ready (retries when stops change)
+                useEffect(() => {
+                    if (!mapReady || routeList.length === 0) return;
+                    if (!navJob) buildRoute(routeList[0], null);
+                    // eslint-disable-next-line react-hooks/exhaustive-deps
+                }, [mapReady, routeList.length]);
+
+                const goToNextStop = () => {
+                    if (!destJob) return;
+                    const current = destJob;
+                    const currentIdx = routeList.findIndex(r => r.id === current.id);
+                    const nextJob = currentIdx >= 0 ? routeList[currentIdx + 1] : null;
+                    const currentCoords = geocodeCache[current.address.toLowerCase().trim()];
+                    // mark current stop done (removes it from the active route)
+                    completeJob(current);
+                    setRouteData(null);
+                    setInstructions([]);
+                    if (nextJob) {
+                        setNavStatus({ type: 'info', message: 'Marked done — routing to next stop…' });
+                        buildRoute(nextJob, currentCoords || gpsPos);
+                    } else {
+                        setNavJob(null);
+                        setNavStatus({ type: 'success', message: '🎉 All stops complete!' });
+                    }
+                };
+
+                const saveEndpoint = () => {
+                    setOsrmEndpoint(endpoint);
+                    setShowEndpoint(false);
+                    setNavStatus({ type: 'info', message: 'Routing server updated. Rebuild the route.' });
+                };
+
+                const totalDist = routeData ? fmtDistance(routeData.distance) : '—';
+                const totalDur = routeData ? fmtDuration(routeData.duration) : '—';
+                const nextInst = instructions.length > 1 ? instructions[Math.min(currentStep, instructions.length - 1)] : null;
+
+                return (
+                    <div className="min-h-screen bg-slate-950 text-white p-2 flex flex-col gap-3">
+                        {/* Header */}
+                        <div className="flex items-center justify-between px-1">
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => setNavMode(false)}
+                                    className="w-10 h-10 rounded-xl bg-slate-900 border border-slate-800 text-lg font-bold active:bg-slate-800"
+                                >
+                                    ‹
+                                </button>
+                                <div>
+                                    <p className="text-xs font-bold text-sky-400 uppercase tracking-wide">Navigation</p>
+                                    <p className="text-[10px] text-slate-500">{destJob ? destJob.address : 'No stops on route'}</p>
+                                </div>
+                            </div>
+                            <div className="text-right">
+                                <p className="text-[10px] text-slate-500 uppercase">ETA</p>
+                                <p className="text-lg font-black font-mono text-emerald-400 leading-tight">{totalDur}</p>
+                                <p className="text-[10px] text-slate-500">{totalDist}</p>
+                            </div>
+                        </div>
+
+                        {/* Map */}
+                        <div className="relative w-full h-[38vh] rounded-2xl overflow-hidden border border-slate-800">
+                            <div ref={mapContainerRef} className="absolute inset-0 z-0"></div>
+                            {!mapReady && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-slate-950 z-10">
+                                    <p className="text-sm text-slate-400">Loading map…</p>
+                                </div>
+                            )}
+                            {navLoading && (
+                                <div className="absolute top-2 left-2 z-10 bg-slate-900/90 rounded-md px-2.5 py-1.5 text-[10px] text-sky-300 border border-sky-500/40">
+                                    <span className="inline-block animate-spin mr-1">⟳</span> Routing…
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Status bar */}
+                        {navStatus && (
+                            <div className={`px-3 py-2 rounded-xl text-xs font-medium border ${navStatus.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : navStatus.type === 'error' ? 'bg-red-500/10 border-red-500/30 text-red-400' : 'bg-blue-500/10 border-blue-500/30 text-blue-400'}`}>
+                                {navStatus.message}
+                            </div>
+                        )}
+
+                        {/* Next instruction — big */}
+                        {nextInst && (
+                            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex items-center gap-4">
+                                <span className="text-4xl text-sky-400 font-black">{nextInst.icon}</span>
+                                <div className="flex-1 min-w-0">
+                                    <p className="text-base font-black leading-tight">{nextInst.text}{nextInst.road ? ` on ${nextInst.road}` : ''}</p>
+                                    <p className="text-xs text-slate-400 mt-1">{fmtDistance(nextInst.distance)} • {fmtDuration(nextInst.duration)}</p>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Step list */}
+                        <div className="flex-1 min-h-0 overflow-y-auto space-y-1 pr-1">
+                            {instructions.map((inst, i) => (
+                                <button
+                                    key={i}
+                                    onClick={() => setCurrentStep(i)}
+                                    className={`w-full flex items-center gap-3 p-2.5 rounded-xl text-left border transition ${i === currentStep ? 'bg-sky-500/15 border-sky-500/50' : 'bg-slate-900 border-slate-800 active:bg-slate-800'}`}
+                                >
+                                    <span className={`w-7 h-7 flex items-center justify-center rounded-lg text-sm font-bold ${i === currentStep ? 'bg-sky-500 text-slate-950' : 'bg-slate-800 text-slate-300'}`}>{inst.icon}</span>
+                                    <div className="flex-1 min-w-0">
+                                        <p className={`text-xs font-semibold ${i === currentStep ? 'text-sky-300' : 'text-slate-200'}`}>{inst.text}{inst.road ? ` — ${inst.road}` : ''}</p>
+                                    </div>
+                                    <span className="text-[10px] font-mono text-slate-500 shrink-0">{fmtDistance(inst.distance)}</span>
+                                </button>
+                            ))}
+                            {instructions.length === 0 && !navLoading && (
+                                <div className="text-center py-8">
+                                    <p className="text-xs text-slate-500">{routeData && routeData.offline ? 'Offline — no turn instructions available.' : 'Build a route to see turn-by-turn instructions.'}</p>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Controls */}
+                        <div className="space-y-2">
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={() => { setNavMode(false); setRightTab('map'); }}
+                                    className="flex-1 py-3.5 rounded-xl bg-slate-900 border border-slate-800 text-sm font-bold text-slate-300 active:bg-slate-800"
+                                >
+                                    🗺 Full Map
+                                </button>
+                                <button
+                                    onClick={() => setShowEndpoint(v => !v)}
+                                    className="px-4 py-3.5 rounded-xl bg-slate-900 border border-slate-800 text-sm font-bold text-slate-300 active:bg-slate-800"
+                                    title="Routing server settings"
+                                >
+                                    ⚙
+                                </button>
+                            </div>
+                            {showEndpoint && (
+                                <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
+                                    <p className="text-[10px] text-slate-400 mb-2">OSRM routing server (for self-hosted offline routing, e.g. localhost:5000 on your network)</p>
+                                    <div className="flex gap-2">
+                                        <input
+                                            value={endpoint}
+                                            onChange={e => setEndpoint(e.target.value)}
+                                            placeholder={OSRM_DEFAULT_ENDPOINT}
+                                            className="flex-1 px-2.5 py-2 rounded-lg bg-slate-950 border border-slate-700 text-xs focus:outline-none focus:border-sky-500"
+                                        />
+                                        <button onClick={saveEndpoint} className="px-3 py-2 rounded-lg bg-sky-600 text-white text-xs font-bold">Save</button>
+                                    </div>
+                                </div>
+                            )}
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={() => buildRoute(destJob || routeList[0], null)}
+                                    disabled={routeList.length === 0}
+                                    className="flex-1 py-3.5 rounded-xl bg-slate-900 border border-slate-800 text-sm font-bold text-slate-300 active:bg-slate-800 disabled:opacity-40"
+                                >
+                                    ↻ Rebuild
+                                </button>
+                                <button
+                                    onClick={goToNextStop}
+                                    disabled={!destJob}
+                                    className={`flex-1 py-3.5 rounded-xl text-sm font-black border-2 transition ${!destJob ? 'bg-slate-800 border-slate-800 text-slate-600' : 'bg-emerald-600 border-emerald-500 text-white active:scale-[0.98]'}`}
+                                >
+                                    {routeList.length === 0 ? 'No Stops' : isLastStop ? '✓ Finish Route' : '✓ Done — Next Stop'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
+            // WatchView component — compact UI with huge touch targets for smartwatches
+            const WatchView = () => {
+                const now = new Date();
+                const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                const dateStr = now.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+
+                // Route progress tracking (per watch session)
+                const [doneCount, setDoneCount] = useState(0);
+                const [justDone, setJustDone] = useState(null);
+                const doneTimerRef = useRef(null);
+                const totalStops = doneCount + routeList.length;
+                const progress = totalStops > 0 ? Math.min(doneCount / totalStops, 1) : 0;
+                const pct = Math.round(progress * 100);
+                const allDone = doneCount > 0 && routeList.length === 0;
+
+                useEffect(() => () => {
+                    if (doneTimerRef.current) clearTimeout(doneTimerRef.current);
+                }, []);
+
+                // Complete a stop: removes it from the route (auto-advance) + counts it
+                const watchComplete = (job) => {
+                    completeJob(job);
+                    setDoneCount(c => c + 1);
+                    setJustDone(job.address);
+                    try { navigator.vibrate && navigator.vibrate(60); } catch (e) {}
+                    if (doneTimerRef.current) clearTimeout(doneTimerRef.current);
+                    doneTimerRef.current = setTimeout(() => setJustDone(null), 1600);
+                };
+
+                // Completion ring geometry
+                const ringSize = 96, ringStroke = 10;
+                const ringR = (ringSize - ringStroke) / 2;
+                const ringC = 2 * Math.PI * ringR;
+                const ringOffset = ringC - progress * ringC;
+
+                return (
+                    <div className="min-h-screen bg-slate-950 text-white p-2 flex flex-col gap-3" style={{ minWidth: 0 }}>
+                        {/* Header */}
+                        <div className="flex items-center justify-between px-1">
+                            <div>
+                                <p className="text-xs font-bold text-emerald-400 uppercase tracking-wide">Goats</p>
+                                <p className="text-xl font-black leading-tight mt-0.5">{timeStr}</p>
+                                <p className="text-[10px] text-slate-500">{dateStr}</p>
+                            </div>
+                            <div className="text-right">
+                                <p className="text-[10px] text-slate-500 uppercase">Miles</p>
+                                <p className="text-xl font-black font-mono text-emerald-400 leading-tight">{totalMileage.toFixed(1)}</p>
+                                <p className="text-[10px] text-slate-500">${taxDeduction}</p>
+                            </div>
+                        </div>
+
+                        {/* Progress ring widget */}
+                        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-4 flex items-center gap-4">
+                            <div className="relative shrink-0" style={{ width: ringSize, height: ringSize }}>
+                                <svg width={ringSize} height={ringSize} viewBox={`0 0 ${ringSize} ${ringSize}`} className="-rotate-90">
+                                    <circle cx={ringSize / 2} cy={ringSize / 2} r={ringR} fill="none" stroke="#1e293b" strokeWidth={ringStroke} />
+                                    <circle
+                                        cx={ringSize / 2} cy={ringSize / 2} r={ringR}
+                                        fill="none" stroke="#10b981" strokeWidth={ringStroke} strokeLinecap="round"
+                                        strokeDasharray={ringC} strokeDashoffset={ringOffset}
+                                        className="transition-all duration-700 ease-out"
+                                    />
+                                </svg>
+                                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                                    <p className="text-lg font-black leading-none">
+                                        {doneCount}<span className="text-slate-500 text-sm">/{totalStops}</span>
+                                    </p>
+                                    <p className="text-[8px] text-slate-500 uppercase tracking-wide mt-0.5">{pct}%</p>
+                                </div>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                                <p className="text-sm font-black leading-tight">
+                                    {allDone ? '🎉 All stops done!' : `${doneCount} of ${totalStops} stops done`}
+                                </p>
+                                <p className="text-[10px] text-slate-400 mt-0.5">
+                                    {allDone ? 'Great work today' : routeList.length === 0 ? 'Build a route to begin' : `${routeList.length} remaining`}
+                                </p>
+                                <div className="h-1.5 bg-slate-800 rounded-full mt-2 overflow-hidden">
+                                    <div
+                                        className="h-full bg-gradient-to-r from-emerald-600 to-emerald-400 rounded-full transition-all duration-700 ease-out"
+                                        style={{ width: `${pct}%` }}
+                                    ></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Big tracking button */}
+                        <button
+                            onClick={toggleTracking}
+                            className={`w-full py-5 rounded-2xl text-base font-black transition border-2 ${isTracking ? 'bg-red-500/20 text-red-400 border-red-500/60 animate-pulse' : 'bg-emerald-600 text-white border-emerald-500'}`}
+                        >
+                            {isTracking ? '■ STOP ROUTE' : '▶ START ROUTE'}
+                        </button>
+
+                        {/* Add due jobs */}
+                        {dueCount > 0 && (
+                            <button
+                                onClick={addDueJobsToRoute}
+                                className="w-full py-4 rounded-2xl bg-amber-500/20 text-amber-400 border-2 border-amber-500/50 font-black text-base"
+                            >
+                                + {dueCount} DUE JOBS
+                            </button>
+                        )}
+
+                        {/* Just-done toast (auto-advance feedback) */}
+                        {justDone && (
+                            <div className="bg-emerald-600 rounded-2xl px-3 py-2.5 flex items-center gap-2">
+                                <span className="text-lg">✓</span>
+                                <div className="min-w-0">
+                                    <p className="text-[9px] text-emerald-100 uppercase tracking-wide font-bold">Done — auto-advanced</p>
+                                    <p className="text-[11px] font-bold truncate">{justDone}</p>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Current / next stop */}
+                        {routeList.length === 0 ? (
+                            <div className="flex-1 flex items-center justify-center">
+                                <div className="text-center">
+                                    <p className="text-sm font-bold text-slate-300">{allDone ? 'Route complete' : 'No stops'}</p>
+                                    <p className="text-[10px] text-slate-500 mt-1">{allDone ? 'Everything on today\'s route is finished' : 'Add properties to build your route'}</p>
+                                </div>
+                            </div>
+                        ) : (
+                            <>
+                                <div className="flex items-center justify-between px-1">
+                                    <p className="text-[10px] text-slate-500 uppercase tracking-wide">Next stop</p>
+                                    <p className="text-[10px] font-mono text-emerald-400">{routeList.length} left</p>
+                                </div>
+                                {routeList.slice(0, 2).map((job, idx) => {
+                                    const isCurrent = idx === 0;
+                                    return (
+                                        <div key={job.id} className={`p-3 rounded-2xl border-2 transition ${isCurrent ? 'bg-emerald-950/40 border-emerald-500/60' : 'bg-slate-900 border-slate-800'}`}>
+                                            <p className={`text-[10px] font-bold uppercase tracking-wide ${isCurrent ? 'text-emerald-400' : 'text-slate-500'}`}>
+                                                {isCurrent ? '● Now' : '→ Up next'} — {job.service}
+                                            </p>
+                                            <p className="text-base font-black leading-tight mt-1">{job.address}</p>
+                                            <div className="flex gap-2 mt-3">
+                                                <button
+                                                    onClick={() => watchComplete(job)}
+                                                    className="flex-1 py-5 rounded-xl bg-emerald-600 text-white text-xl font-black active:bg-emerald-500 active:scale-95 transition"
+                                                >
+                                                    ✓ DONE
+                                                </button>
+                                                <button
+                                                    onClick={() => toggleJobInRoute(job)}
+                                                    className="px-4 py-5 rounded-xl bg-slate-800 text-slate-400 text-lg font-bold active:bg-slate-700 active:scale-95 transition"
+                                                >
+                                                    ✕
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </>
+                        )}
+
+                        {/* Small footer nav back to full app */}
+                        <button
+                            onClick={() => setWatchMode(false)}
+                            className="w-full py-3 rounded-xl bg-slate-900 border border-slate-800 text-xs font-bold text-slate-400 active:bg-slate-800"
+                        >
+                            ⌂ Full App
+                        </button>
+                    </div>
+                );
+            };
+
+            // Render watch mode, navigation mode, or the full app
+            if (watchMode) {
+                return <WatchView />;
+            }
+            if (navMode) {
+                return <NavigationView />;
+            }
+
+            return (
+                <div className="min-h-screen flex flex-col">
+                    <header className="bg-slate-900 border-b border-slate-800 p-4 flex flex-col md:flex-row justify-between items-center gap-4 sticky top-0 z-10">
+                        <div className="w-full md:w-auto">
+                            <h1 className="text-xl font-bold text-white tracking-tight">Goats Dispatch</h1>
+                            <p className="text-xs text-emerald-400 font-mono mt-1">Offline Ready • GPS Active</p>
+                        </div>
+                        
+                        <div className="bg-slate-950 border border-slate-800 rounded-lg p-2.5 flex items-center justify-between w-full md:w-auto gap-4 shadow-inner">
+                            <div className="pl-2">
+                                <p className="text-[10px] text-slate-500 uppercase tracking-wider font-bold">Route Miles</p>
+                                <p className="text-xl font-mono text-white">{totalMileage.toFixed(2)} <span className="text-xs text-slate-500">mi</span></p>
+                            </div>
+                            <div className="border-l border-slate-800 pl-4 pr-2">
+                                <p className="text-[10px] text-slate-500 uppercase tracking-wider font-bold">Est. Deduction</p>
+                                <p className="text-xl font-mono text-emerald-400">${taxDeduction}</p>
+                            </div>
+                            <button 
+                                onClick={toggleTracking}
+                                className={`ml-2 px-5 py-2.5 rounded-md text-xs font-bold transition shadow-lg ${isTracking ? 'bg-red-500/20 text-red-400 border border-red-500/50 animate-pulse' : 'bg-emerald-600 text-white hover:bg-emerald-500 border border-emerald-500'}`}
+                            >
+                                {isTracking ? 'STOP TRACKING' : 'START ROUTE'}
+                            </button>
+                            <button
+                                onClick={() => setNavMode(true)}
+                                className={`ml-2 px-4 py-2.5 rounded-md text-xs font-bold border transition ${routeList.length === 0 ? 'bg-slate-800 border-slate-800 text-slate-600 cursor-not-allowed' : 'bg-sky-500/15 border-sky-500/40 text-sky-300 hover:bg-sky-500/25'}`}
+                                title="Start turn-by-turn navigation"
+                                disabled={routeList.length === 0}
+                            >
+                                🧭 Navigate
+                            </button>
+                            <button
+                                onClick={() => setWatchMode(v => !v)}
+                                className={`ml-2 w-10 h-10 rounded-md text-base border transition flex items-center justify-center ${watchMode ? 'bg-emerald-500/20 border-emerald-500/50' : 'bg-slate-800 border-slate-700 hover:bg-slate-700'}`}
+                                title="Toggle watch mode (also auto-enables on screens under 300px)"
+                            >
+                                ⌚
+                            </button>
+                        </div>
+                    </header>
+
+                    <div className="flex-grow p-4 md:p-6 flex flex-col lg:flex-row gap-6 max-w-7xl mx-auto w-full">
+                        <div className="flex-grow bg-slate-900 rounded-xl border border-slate-800 p-4 shadow-xl overflow-y-auto">
+                            <div className="flex justify-between items-center mb-4">
+                                <h2 className="text-sm font-bold text-slate-300 uppercase tracking-wide">Property Database</h2>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-xs bg-slate-800 text-slate-400 px-2 py-1 rounded-md">{jobs.length} Total</span>
+                                    <button
+                                        onClick={() => fileInputRef.current.click()}
+                                        className="text-xs px-2.5 py-1.5 rounded-md bg-blue-500/10 border border-blue-500/30 text-blue-400 hover:bg-blue-500/20 transition font-medium"
+                                        title="Import properties from CSV"
+                                    >
+                                        Import CSV
+                                    </button>
+                                    <button
+                                        onClick={exportAllProperties}
+                                        className="text-xs px-2.5 py-1.5 rounded-md bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700 transition font-medium"
+                                        title="Export all properties to CSV"
+                                    >
+                                        Export CSV
+                                    </button>
+                                    <button
+                                        onClick={() => setShowMapsImport(v => !v)}
+                                        className={`text-xs px-2.5 py-1.5 rounded-md border transition font-medium ${showMapsImport ? 'bg-sky-500/20 border-sky-500/50 text-sky-300' : 'bg-sky-500/10 border-sky-500/30 text-sky-400 hover:bg-sky-500/20'}`}
+                                        title="Import locations from Google Maps or Apple Maps"
+                                    >
+                                        Maps
+                                    </button>
+                                </div>
+                            </div>
+                            {showMapsImport && (
+                                <div className="mb-3 p-3 bg-slate-950 border border-slate-800 rounded-lg">
+                                    <p className="text-[10px] text-sky-400 uppercase tracking-wider font-bold mb-2">Import from Maps</p>
+                                    <p className="text-[10px] text-slate-500 mb-2">Paste a Google Maps or Apple Maps share link, or a saved-places JSON array. Locations are added to your property database.</p>
+                                    <div className="flex gap-2">
+                                        <input
+                                            value={mapsLink}
+                                            onChange={e => setMapsLink(e.target.value)}
+                                            onKeyDown={e => { if (e.key === 'Enter') handleMapsImport(); }}
+                                            placeholder="https://maps.apple.com/?ll=44.97,-93.26&q=…"
+                                            className="flex-1 px-3 py-2 rounded-md bg-slate-900 border border-slate-700 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-sky-500"
+                                        />
+                                        <button
+                                            onClick={handleMapsImport}
+                                            disabled={!mapsLink.trim()}
+                                            className={`text-xs px-3 py-2 rounded-md border transition font-bold ${!mapsLink.trim() ? 'bg-slate-800 border-slate-800 text-slate-600 cursor-not-allowed' : 'bg-sky-600 border-sky-500 text-white hover:bg-sky-500'}`}
+                                        >
+                                            Import
+                                        </button>
+                                    </div>
+                                    {mapsStatus && (
+                                        <div className={`mt-2 px-3 py-2 rounded-lg text-xs font-medium border ${mapsStatus.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : mapsStatus.type === 'error' ? 'bg-red-500/10 border-red-500/30 text-red-400' : 'bg-blue-500/10 border-blue-500/30 text-blue-400'}`}>
+                                            {mapsStatus.message}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                            <input
+                                ref={fileInputRef}
+                                type="file"
+                                accept=".csv"
+                                onChange={importCSV}
+                                className="hidden"
+                            />
+                            {importStatus && (
+                                <div className={`mb-3 px-3 py-2 rounded-lg text-xs font-medium border ${importStatus.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-red-500/10 border-red-500/30 text-red-400'}`}>
+                                    {importStatus.message}
+                                    <button onClick={() => setImportStatus(null)} className="ml-2 underline hover:no-underline">Dismiss</button>
+                                </div>
+                            )}
+                            <div className="space-y-2">
+                                {jobs.map(job => {
+                                    const inRoute = routeList.some(r => r.id === job.id);
+                                    return (
+                                        <div key={job.id} className={`flex justify-between items-center p-3.5 border rounded-lg transition ${inRoute ? 'bg-emerald-950/20 border-emerald-900/50' : 'bg-slate-950 border-slate-800 hover:border-slate-700'}`}>
+                                            <div className="min-w-0">
+                                                <p className="font-semibold text-slate-100 text-sm">{job.address}</p>
+                                                <p className="text-xs text-slate-400 mt-0.5 truncate">{job.service}</p>
+                                                {(() => {
+                                                    const s = scheduleData.find(x => x.job.id === job.id);
+                                                    if (!s || !s.freqDays) return null;
+                                                    const badgeCls = s.status === 'overdue' ? 'bg-red-500/15 text-red-400 border-red-500/40'
+                                                        : s.status === 'dueToday' ? 'bg-amber-500/15 text-amber-400 border-amber-500/40'
+                                                        : s.status === 'thisWeek' ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/40'
+                                                        : 'bg-slate-800 text-slate-500 border-slate-700';
+                                                    const label = s.status === 'overdue' ? `Overdue ${s.daysOverdue}d`
+                                                        : s.status === 'dueToday' ? 'Due today'
+                                                        : `Due ${fmtShort(s.nextDue)}`;
+                                                    return (
+                                                        <span className={`inline-block mt-1 text-[9px] px-1.5 py-0.5 rounded border font-mono ${badgeCls}`}>
+                                                            {label}
+                                                        </span>
+                                                    );
+                                                })()}
+                                            </div>
+                                            <button 
+                                                onClick={() => toggleJobInRoute(job)}
+                                                className={`text-xs px-3 py-1.5 rounded-lg transition font-medium border ${inRoute ? 'bg-slate-900 border-slate-700 text-slate-400 hover:text-red-400' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'}`}
+                                            >
+                                                {inRoute ? 'Remove' : '+ Route'}
+                                            </button>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        <div className="w-full lg:w-96 bg-slate-900 rounded-xl border border-slate-800 p-4 h-fit lg:sticky lg:top-24 shadow-xl">
+                            {/* Tabs */}
+                            <div className="flex border-b border-slate-800 mb-3 overflow-x-auto">
+                                <button
+                                    onClick={() => setRightTab('route')}
+                                    className={`px-3 py-2 text-xs font-bold uppercase tracking-wide transition border-b-2 whitespace-nowrap ${rightTab === 'route' ? 'text-emerald-400 border-emerald-400' : 'text-slate-500 border-transparent hover:text-slate-300'}`}
+                                >
+                                    Route
+                                </button>
+                                <button
+                                    onClick={() => setRightTab('map')}
+                                    className={`px-3 py-2 text-xs font-bold uppercase tracking-wide transition border-b-2 whitespace-nowrap ${rightTab === 'map' ? 'text-emerald-400 border-emerald-400' : 'text-slate-500 border-transparent hover:text-slate-300'}`}
+                                >
+                                    Map
+                                </button>
+                                <button
+                                    onClick={() => setRightTab('schedule')}
+                                    className={`px-3 py-2 text-xs font-bold uppercase tracking-wide transition border-b-2 whitespace-nowrap ${rightTab === 'schedule' ? 'text-emerald-400 border-emerald-400' : 'text-slate-500 border-transparent hover:text-slate-300'}`}
+                                >
+                                    Schedule{dueCount > 0 ? ` (${dueCount})` : ''}
+                                </button>
+                                <button
+                                    onClick={() => setRightTab('stats')}
+                                    className={`px-3 py-2 text-xs font-bold uppercase tracking-wide transition border-b-2 whitespace-nowrap ${rightTab === 'stats' ? 'text-emerald-400 border-emerald-400' : 'text-slate-500 border-transparent hover:text-slate-300'}`}
+                                >
+                                    Stats
+                                </button>
+                                <button
+                                    onClick={() => setRightTab('history')}
+                                    className={`px-3 py-2 text-xs font-bold uppercase tracking-wide transition border-b-2 whitespace-nowrap ${rightTab === 'history' ? 'text-emerald-400 border-emerald-400' : 'text-slate-500 border-transparent hover:text-slate-300'}`}
+                                >
+                                    History ({completedToday} today)
+                                </button>
+                            </div>
+
+                            {/* Route Tab */}
+                            {rightTab === 'route' && (
+                                <>
+                                    {/* Optimize status */}
+                                    {optimizeStatus && (
+                                        <div className={`mb-3 px-3 py-2 rounded-lg text-xs font-medium border ${optimizeStatus.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : optimizeStatus.type === 'error' ? 'bg-red-500/10 border-red-500/30 text-red-400' : 'bg-blue-500/10 border-blue-500/30 text-blue-400'}`}>
+                                            {optimizeStatus.type === 'info' && <span className="inline-block animate-spin mr-1">⟳</span>}
+                                            {optimizeStatus.message}
+                                            <button onClick={() => setOptimizeStatus(null)} className="ml-2 underline hover:no-underline">Dismiss</button>
+                                        </div>
+                                    )}
+                                    <div className="flex justify-end items-center mb-3 gap-2">
+                                        <button
+                                            onClick={optimizeRouteHandler}
+                                            disabled={routeList.length < 2 || isOptimizing}
+                                            className={`text-xs px-2.5 py-1.5 rounded-md border transition font-medium ${routeList.length < 2 || isOptimizing ? 'bg-slate-800 border-slate-800 text-slate-600 cursor-not-allowed' : 'bg-violet-500/10 border-violet-500/30 text-violet-400 hover:bg-violet-500/20'}`}
+                                            title="Sort stops by proximity to minimize driving distance"
+                                        >
+                                            {isOptimizing ? 'Optimizing...' : 'Optimize Route'}
+                                        </button>
+                                        <span className="bg-emerald-500 text-slate-950 text-xs font-bold px-2 py-0.5 rounded-full">{routeList.length} Stops</span>
+                                        <button
+                                            onClick={() => setNavMode(true)}
+                                            disabled={routeList.length === 0}
+                                            className={`text-xs px-2.5 py-1.5 rounded-md border transition font-medium ${routeList.length === 0 ? 'bg-slate-800 border-slate-800 text-slate-600 cursor-not-allowed' : 'bg-sky-500/10 border-sky-500/30 text-sky-400 hover:bg-sky-500/20'}`}
+                                            title="Start turn-by-turn navigation"
+                                        >
+                                            🧭 Navigate
+                                        </button>
+                                        <button
+                                            onClick={exportRouteManifest}
+                                            disabled={routeList.length === 0}
+                                            className={`text-xs px-2.5 py-1.5 rounded-md border transition font-medium ${routeList.length === 0 ? 'bg-slate-800 border-slate-800 text-slate-600 cursor-not-allowed' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'}`}
+                                            title="Export route manifest to CSV"
+                                        >
+                                            Export Route
+                                        </button>
+                                    </div>
+                                    <div className="space-y-2 mb-4 max-h-[60vh] overflow-y-auto pr-1">
+                                        {routeList.map((job, idx) => (
+                                            <div key={job.id} className="p-3 bg-slate-950 border border-slate-800 rounded-lg flex items-center justify-between group">
+                                                <div className="flex items-center gap-3">
+                                                    <span className="bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 font-bold px-2 py-0.5 rounded text-sm font-mono">#{idx + 1}</span>
+                                                    <div>
+                                                        <p className="font-semibold text-sm text-slate-200">{job.address}</p>
+                                                        <p className="text-[10px] text-slate-500">{job.service}</p>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-1.5">
+                                                    <button
+                                                        onClick={() => completeJob(job)}
+                                                        className="text-[10px] px-2 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-500 transition font-bold shadow"
+                                                        title="Mark as completed"
+                                                    >
+                                                        Done
+                                                    </button>
+                                                    <button
+                                                        onClick={() => toggleJobInRoute(job)}
+                                                        className="text-[10px] px-2 py-1 rounded-md bg-slate-800 border border-slate-700 text-slate-400 hover:text-red-400 transition font-medium"
+                                                        title="Remove from route"
+                                                    >
+                                                        Remove
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                        {routeList.length === 0 && (
+                                            <div className="text-center py-12 border border-dashed border-slate-800 rounded-lg">
+                                                <p className="text-xs text-slate-500">No properties queued.</p>
+                                                <p className="text-[10px] text-slate-600 mt-1">Select properties from the database to build your route.</p>
+                                            </div>
+                                        )}
+                                    </div>
+                                </>
+                            )}
+
+                            {/* Map Tab */}
+                            {rightTab === 'map' && (
+                                <div className="-mx-4 -mt-3">
+                                    <MapView route={routeList} gpsPos={gpsPosition} geocodeCache={geocodeCache} onAddFromMap={handleAddFromMap} />
+                                </div>
+                            )}
+
+                            {/* Schedule Tab */}
+                            {rightTab === 'schedule' && (
+                                <div className="space-y-1 max-h-[70vh] overflow-y-auto pr-1">
+                                    <ScheduleView />
+                                </div>
+                            )}
+
+                            {/* Stats Tab */}
+                            {rightTab === 'stats' && (
+                                <div className="space-y-1 max-h-[70vh] overflow-y-auto pr-1">
+                                    <StatsView />
+                                </div>
+                            )}
+
+                            {/* History Tab */}
+                            {rightTab === 'history' && (
+                                <div className="space-y-2 mb-4 max-h-[60vh] overflow-y-auto pr-1">
+                                    {(() => {
+                                        const jobsWithHistory = jobs
+                                            .filter(j => j.completedHistory && j.completedHistory.length > 0)
+                                            .sort((a, b) => {
+                                                const aLast = a.completedHistory[a.completedHistory.length - 1].timestamp;
+                                                const bLast = b.completedHistory[b.completedHistory.length - 1].timestamp;
+                                                return bLast - aLast;
+                                            });
+                                        if (jobsWithHistory.length === 0) {
+                                            return (
+                                                <div className="text-center py-12 border border-dashed border-slate-800 rounded-lg">
+                                                    <p className="text-xs text-slate-500">No completion history yet.</p>
+                                                    <p className="text-[10px] text-slate-600 mt-1">Mark jobs as done from the Route tab to track completions.</p>
+                                                </div>
+                                            );
+                                        }
+                                        return jobsWithHistory.map(job => {
+                                            const lastCompletion = job.completedHistory[job.completedHistory.length - 1];
+                                            const isToday = lastCompletion.date === todayStr;
+                                            return (
+                                                <div key={job.id} className={`p-3 rounded-lg border ${isToday ? 'bg-emerald-950/20 border-emerald-900/50' : 'bg-slate-950 border-slate-800'}`}>
+                                                    <div className="flex items-center justify-between">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="text-emerald-400">✓</span>
+                                                            <div>
+                                                                <p className="font-semibold text-sm text-slate-200">{job.address}</p>
+                                                                <p className="text-[10px] text-slate-500">{job.service} • {job.completedHistory.length} completion{job.completedHistory.length > 1 ? 's' : ''}</p>
+                                                            </div>
+                                                        </div>
+                                                        <button
+                                                            onClick={() => undoLastCompletion(job)}
+                                                            className="text-[10px] px-2 py-1 rounded-md bg-slate-800 border border-slate-700 text-slate-400 hover:text-amber-400 hover:border-amber-500/30 transition font-medium"
+                                                            title="Undo last completion"
+                                                        >
+                                                            Undo
+                                                        </button>
+                                                    </div>
+                                                    <div className="mt-2 flex flex-wrap gap-1">
+                                                        {job.completedHistory.slice(-5).reverse().map((h, i) => (
+                                                            <span key={i} className={`text-[9px] px-1.5 py-0.5 rounded font-mono ${h.date === todayStr ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-500'}`}>
+                                                                {h.date}
+                                                            </span>
+                                                        ))}
+                                                        {job.completedHistory.length > 5 && (
+                                                            <span className="text-[9px] text-slate-600">+{job.completedHistory.length - 5} more</span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            );
+                                        });
+                                    })()}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>

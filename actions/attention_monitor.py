@@ -17,6 +17,7 @@ import ctypes
 from ctypes import wintypes
 
 import pyautogui
+from core.error_handler import log_error
 
 try:
     import psutil
@@ -151,8 +152,8 @@ def _parse_toast_payload(payload: bytes | str | None) -> tuple[str, list[str], l
                 val = (node.get(attr) or "").strip()
                 if val:
                     actions.append(val)
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.attention_monitor", severity="warning")
 
     flat = " ".join(texts + actions + [raw]).lower()
     kind = "call" if any(k in flat for k in _CALL_HINTS) else "message"
@@ -188,8 +189,8 @@ def _collect_text_snapshot(win, limit: int = 18) -> list[str]:
         title = _norm(win.window_text())
         if title:
             out.append(title)
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.attention_monitor", severity="warning")
 
     try:
         desc = win.descendants()
@@ -279,14 +280,14 @@ def _enum_visible_windows() -> list[dict]:
                 "class": _window_class(hwnd),
                 "pid": _window_pid(hwnd),
             })
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.attention_monitor", severity="warning")
         return True
 
     try:
         user32.EnumWindows(callback, 0)
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.attention_monitor", severity="warning")
     return results
 
 
@@ -316,20 +317,20 @@ def _cleanup_current_audio() -> None:
     if _current_player_alias is not None:
         try:
             ctypes.windll.winmm.mciSendStringW(f"stop {_current_player_alias}", None, 0, None)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.attention_monitor", severity="warning")
         try:
             ctypes.windll.winmm.mciSendStringW(f"close {_current_player_alias}", None, 0, None)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.attention_monitor", severity="warning")
         _current_player_alias = None
 
     if _current_audio_path is not None:
         try:
             if os.path.exists(_current_audio_path):
                 os.remove(_current_audio_path)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.attention_monitor", severity="warning")
         _current_audio_path = None
 
 
@@ -347,13 +348,13 @@ def speak_native(text: str) -> None:
 
     try:
         _cleanup_current_audio()
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.attention_monitor", severity="warning")
 
-    audio_path = os.path.join(tempfile.gettempdir(), f"almighty_edge_tts_{uuid.uuid4().hex}.mp3")
+    audio_path = os.path.join(tempfile.gettempdir(), f"rex_edge_tts_{uuid.uuid4().hex}.mp3")
     try:
         # Use a male neural voice for app speech so daily briefing and alerts sound
-        # closer to Almighty's normal male audio output.
+        # closer to REX's normal male audio output.
         communicator = edge_tts.Communicate(text, voice="en-US-GuyNeural")
         communicator.save_sync(audio_path)
     except Exception as exc:  # pragma: no cover
@@ -361,84 +362,32 @@ def speak_native(text: str) -> None:
         _cleanup_current_audio()
         return
 
-    player_alias = f"almighty_tts_{uuid.uuid4().hex}"
+    player_alias = f"rex_tts_{uuid.uuid4().hex}"
     try:
-        if platform.system() == "Windows":
-            result = ctypes.windll.winmm.mciSendStringW(
-                f'open "{audio_path}" type mpegvideo alias {player_alias}',
-                None,
-                0,
-                None,
-            )
-            if result != 0:
-                raise RuntimeError(f"MCI open failed: {result}")
+        result = ctypes.windll.winmm.mciSendStringW(
+            f'open "{audio_path}" type mpegvideo alias {player_alias}',
+            None,
+            0,
+            None,
+        )
+        if result != 0:
+            raise RuntimeError(f"MCI open failed: {result}")
 
-            result = ctypes.windll.winmm.mciSendStringW(
-                f"play {player_alias} wait",
-                None,
-                0,
-                None,
-            )
-            if result != 0:
-                raise RuntimeError(f"MCI play failed: {result}")
+        result = ctypes.windll.winmm.mciSendStringW(
+            f"play {player_alias} wait",
+            None,
+            0,
+            None,
+        )
+        if result != 0:
+            raise RuntimeError(f"MCI play failed: {result}")
 
-            _current_player_alias = player_alias
-            _current_audio_path = audio_path
-        else:
-            # Linux / macOS: Windows MCI (ctypes.windll.winmm) does not exist,
-            # so decode and play the MP3 through the first available CLI player
-            # (ffplay -> mpg123 -> paplay).  This is what makes the daily
-            # briefing, attention alerts, and idle prompts audible on Linux.
-            _play_audio_file(audio_path)
-            _current_audio_path = audio_path
+        _current_player_alias = player_alias
+        _current_audio_path = audio_path
     except Exception as exc:  # pragma: no cover
         print(f"[AttentionMonitor] Edge TTS playback failed: {exc}")
         _cleanup_current_audio()
         return
-
-
-def _play_audio_file(path: str) -> None:
-    """Play an MP3 on non-Windows via the first available CLI player."""
-    import shutil
-    import subprocess
-
-    candidates = [
-        ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", "-i", path],
-        ["mpg123", "-q", path],
-    ]
-    for cmd in candidates:
-        if shutil.which(cmd[0]) is None:
-            continue
-        try:
-            subprocess.run(
-                cmd, check=False, timeout=300,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            return
-        except Exception:
-            continue
-
-    # Last resort: decode with ffmpeg to raw PCM and pipe into paplay.
-    if shutil.which("ffmpeg") and shutil.which("paplay"):
-        try:
-            decode = subprocess.Popen(
-                ["ffmpeg", "-loglevel", "quiet", "-i", path,
-                 "-f", "s16le", "-ar", "48000", "-ac", "2", "-"],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            )
-            with subprocess.Popen(
-                ["paplay", "--raw", "--format=s16le", "--rate=48000", "--channels=2"],
-                stdin=decode.stdout, stderr=subprocess.DEVNULL,
-            ):
-                pass
-            if decode.stdout:
-                decode.stdout.close()
-            decode.wait()
-            return
-        except Exception:
-            pass
-
-    raise RuntimeError("no audio player available (ffplay/mpg123/paplay)")
 
 
 def stop_native_speech() -> None:
@@ -456,15 +405,15 @@ def _focus_window_by_app(app: str) -> bool:
             if _match_app(title, proc) == app:
                 try:
                     win.set_focus()
-                except Exception:
-                    pass
+                except Exception as _e:
+                    log_error(_e, context="actions.attention_monitor", severity="warning")
                 try:
                     win.restore()
-                except Exception:
-                    pass
+                except Exception as _e:
+                    log_error(_e, context="actions.attention_monitor", severity="warning")
                 return True
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.attention_monitor", severity="warning")
     return False
 
 
@@ -489,12 +438,12 @@ def _click_best_button(app: str, action: str) -> bool:
                         try:
                             ctrl.click_input()
                             return True
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-    except Exception:
-        pass
+                        except Exception as _e:
+                            log_error(_e, context="actions.attention_monitor", severity="warning")
+            except Exception as _e:
+                log_error(_e, context="actions.attention_monitor", severity="warning")
+    except Exception as _e:
+        log_error(_e, context="actions.attention_monitor", severity="warning")
     return False
 
 
@@ -510,8 +459,8 @@ def handle_call_action(event: dict, action: str) -> str:
             try:
                 pyautogui.press("enter")
                 return f"Tried to pick up the call on {event.get('app', 'the app')}."
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="actions.attention_monitor", severity="warning")
         return f"I found the call on {event.get('app', 'the app')}, but could not confirm the answer button."
 
     if action in {"ignore", "decline", "reject", "cut"}:
@@ -521,8 +470,8 @@ def handle_call_action(event: dict, action: str) -> str:
             try:
                 pyautogui.press("esc")
                 return f"Tried to decline the call on {event.get('app', 'the app')}."
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="actions.attention_monitor", severity="warning")
         return f"I found the call on {event.get('app', 'the app')}, but could not confirm the decline button."
 
     return "Unknown call action."
@@ -679,7 +628,7 @@ class AttentionMonitor:
                 continue
 
             hay = f"{title} {win.get('class') or ''} {proc_name}".lower()
-            if "almighty" in hay:
+            if "rex" in hay:
                 continue
 
             if app in {"Zoom", "Teams", "WhatsApp"} and _contains_any(hay, ("meeting", "call", "incoming", "ringing", "conference", "joined")):

@@ -7,6 +7,7 @@ import os
 import platform
 import random
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -14,6 +15,7 @@ from collections import deque
 from pathlib import Path
 
 import psutil
+from core.error_handler import log_error
 if platform.system() == "Windows":
     import winreg
 
@@ -37,9 +39,9 @@ from PyQt6.QtWidgets import (
 from discord_bot import DiscordBotService
 from gesture_utils import estimate_gesture_state
 from smart_home import SmartHomeService
-from smart_home_page_new import AlmightyHomePage, _DeviceTile
+from smart_home_page_new import REXHomePage, _DeviceTile
+from memory_panel import MemoryPanel
 from workspace_store import store as workspace_store
-from config.profile import DEFAULT_CITY, DEFAULT_USER_NAME, get_city, get_user_name
 
 def _base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -51,8 +53,8 @@ CONFIG_DIR = BASE_DIR / "config"
 API_FILE   = CONFIG_DIR / "api_keys.json"
 APP_SETTINGS_FILE = CONFIG_DIR / "app_settings.json"
 DISCORD_SETTINGS_FILE = CONFIG_DIR / "discord_bot.json"
-LOGO_FILE  = BASE_DIR / "assets" / "Almighty_AI_Logo.png"
-LOGO_ICO   = BASE_DIR / "assets" / "Almighty_AI_Logo.ico"
+LOGO_FILE  = BASE_DIR / "assets" / "REX_Lite_Logo.png"
+LOGO_ICO   = BASE_DIR / "assets" / "REX_Lite_Logo.ico"
 BACKGROUND_IMAGE_FILE = BASE_DIR / "assets" / "background.png"
 MODEL_DOWNLOAD_URL = "https://storage.googleapis.com/mediapipe-assets/hand_landmarker.task"
 
@@ -131,12 +133,11 @@ class BackgroundWidget(QWidget):
 class RemoteKeyOverlay(QWidget):
     closed = pyqtSignal()
 
-    def __init__(self, url: str, key: str, auto: str, manual: str, warning: str = "", parent=None):
+    def __init__(self, url: str, key: str, auto: str, manual: str, parent=None):
         super().__init__(parent)
         self._on_new_key = None
         self._manual_url = manual or url
         self._auto_login_url = auto or url
-        self._warning = warning or ""
         self._expiry = time.time() + 600
 
         # larger opaque panel with neon red glow
@@ -165,8 +166,8 @@ class RemoteKeyOverlay(QWidget):
             glow.setColor(QColor(255,69,69,200))
             glow.setOffset(0, 0)
             frame.setGraphicsEffect(glow)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
         title = QLabel("Mobile Connect")
         title.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
@@ -201,15 +202,6 @@ class RemoteKeyOverlay(QWidget):
         self._url_lbl.setFont(QFont("Consolas", 9))
         self._url_lbl.setStyleSheet(f"color: {C.TEXT_MED};")
         lay.addWidget(self._url_lbl)
-
-        self._warning_lbl = QLabel("")
-        self._warning_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._warning_lbl.setWordWrap(True)
-        self._warning_lbl.setFont(QFont("Segoe UI", 8))
-        self._warning_lbl.setStyleSheet(f"color: {C.PRI};")
-        self._warning_lbl.setVisible(False)
-        lay.addWidget(self._warning_lbl)
-        self._set_warning(self._warning)
 
         self._key_lbl = QLabel(key)
         self._key_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -272,11 +264,6 @@ class RemoteKeyOverlay(QWidget):
         self._update_qr(self._auto_login_url)
         self._tick()
 
-    def _set_warning(self, text: str) -> None:
-        self._warning = (text or "").strip()
-        self._warning_lbl.setText(self._warning)
-        self._warning_lbl.setVisible(bool(self._warning))
-
         # Ensure the overlay has a sensible default size so positioning works.
         self.adjustSize()
         try:
@@ -331,7 +318,7 @@ class RemoteKeyOverlay(QWidget):
         self._qr_label.setText("OK")
         self._qr_label.setFont(QFont("Segoe UI", 34, QFont.Weight.Black))
         self._qr_label.setStyleSheet("color: #37ff5f; background: #041006; border-radius: 12px;")
-        self._timer_lbl.setText("Phone connected. Almighty remote is ready.")
+        self._timer_lbl.setText("Phone connected. REX remote is ready.")
 
     def _refresh_key(self):
         if not self._on_new_key:
@@ -343,11 +330,9 @@ class RemoteKeyOverlay(QWidget):
         key = result[1]
         auto = result[2] if len(result) >= 3 else url
         manual = result[3] if len(result) >= 4 else url
-        warning = result[4] if len(result) >= 5 else ""
         self._manual_url = manual or url
         self._auto_login_url = auto or url
         self._url_lbl.setText(self._manual_url)
-        self._set_warning(warning)
         self._key_lbl.setText(key)
         self._key_lbl.setStyleSheet(f"""
             color: {C.WHITE};
@@ -504,11 +489,7 @@ def _default_app_settings() -> dict:
         "attention_call_prompts": True,
         "developer_mode_enabled": False,
         "developer_mode_workspace": "",
-        "user_name": DEFAULT_USER_NAME,
-        "city": DEFAULT_CITY,
-        # On-device wake word ('Hey Rex' via Vosk)
-        "wake_word_enabled": True,
-        "wake_word_sensitivity": 0.5,
+        "speak_when_spoken_to": False,
     }
 
 
@@ -537,8 +518,8 @@ class _SysMetrics:
         while self._running:
             try:
                 self._update()
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
             time.sleep(1.5)
 
     def _update(self):
@@ -580,8 +561,8 @@ class _SysMetrics:
                 vals = [float(v.strip()) for v in r.stdout.strip().split("\n") if v.strip()]
                 if vals:
                     return sum(vals) / len(vals)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
         # AMD (Linux)
         if _OS == "Linux":
@@ -598,8 +579,8 @@ class _SysMetrics:
                                 return float(parts[1].strip().replace("%", ""))
                             except ValueError:
                                 pass
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
 
             # Intel GPU (Linux)
             try:
@@ -612,10 +593,10 @@ class _SysMetrics:
                     m = re.search(r'"busy":\s*([\d.]+)', r.stdout)
                     if m:
                         return float(m.group(1))
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
 
-        # macOS â€” powermetrics (GPU Engine)
+        # macOS - powermetrics (GPU Engine)
         if _OS == "Darwin":
             try:
                 r = _quiet_run(
@@ -628,8 +609,8 @@ class _SysMetrics:
                     m = re.search(r'GPU\s+Active:\s+([\d.]+)%', r.stdout)
                     if m:
                         return float(m.group(1))
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
 
         return -1.0
 
@@ -646,8 +627,8 @@ class _SysMetrics:
             for entries in temps.values():
                 if entries:
                     return entries[0].current
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
         if _OS == "Darwin":
             try:
                 r = _quiet_run(
@@ -658,8 +639,8 @@ class _SysMetrics:
                     m = re.search(r"([\d.]+)", r.stdout)
                     if m:
                         return float(m.group(1))
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
 
         if _OS == "Windows":
             try:
@@ -671,8 +652,8 @@ class _SysMetrics:
                 if r.returncode == 0 and r.stdout.strip():
                     raw = float(r.stdout.strip().split("\n")[0])
                     return (raw / 10.0) - 273.15
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
 
         return -1.0
 
@@ -727,8 +708,8 @@ def _camera_available() -> bool:
         if cap is not None:
             try:
                 cap.release()
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
 
     _CAM_OK_CACHE["ok"] = ok
     _CAM_OK_CACHE["ts"] = now
@@ -957,8 +938,8 @@ class GestureCameraPreview(QFrame):
 
         try:
             self.setFixedHeight(self._expanded_height)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
         self._set_status("Searching for hand...", "searching")
         self._start_camera()
@@ -973,8 +954,8 @@ class GestureCameraPreview(QFrame):
                 self._toggle_camera()
                 event.accept()
                 return
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
         return super().mousePressEvent(event)
 
     def _set_status(self, text: str, level: str = "searching"):
@@ -999,8 +980,8 @@ class GestureCameraPreview(QFrame):
             try:
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
             if not cap.isOpened():
                 cap.release()
                 raise RuntimeError("camera unavailable")
@@ -1012,16 +993,16 @@ class GestureCameraPreview(QFrame):
             try:
                 import pyautogui
                 pyautogui.FAILSAFE = False
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
         except Exception as exc:
             self._set_status(f"Gesture camera is offline: {exc}", "lost")
 
         if self._cap is not None:
             try:
                 self.setFixedHeight(self._expanded_height)
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
 
     def _stop_camera(self):
         if self._timer is not None:
@@ -1031,20 +1012,20 @@ class GestureCameraPreview(QFrame):
         if self._cap is not None:
             try:
                 self._cap.release()
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
             self._cap = None
         if self._hands is not None:
             try:
                 self._hands.close()
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
             self._hands = None
 
         try:
             self.setFixedHeight(self._collapsed_height)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
         self._set_status("Camera stopped", "lost")
 
     def _download_hand_landmarker_model(self, model_path: Path) -> bool:
@@ -1067,8 +1048,8 @@ class GestureCameraPreview(QFrame):
             try:
                 if temp_path.exists():
                     temp_path.unlink()
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
             self._set_status(
                 f"Gesture model download failed: {exc}. "
                 f"Put hand_landmarker.task into {model_path.parent} and restart.",
@@ -1100,8 +1081,8 @@ class GestureCameraPreview(QFrame):
         mp = None
         try:
             mp = importlib.import_module("mediapipe")
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
         if mp is None:
             self._set_status(
@@ -1309,15 +1290,15 @@ class GestureCameraPreview(QFrame):
                 pyautogui.moveTo(target_x, target_y, duration=0)
             except Exception:
                 pyautogui.moveTo(target_x, target_y, duration=0.01)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def _trigger_click(self):
         try:
             import pyautogui
             pyautogui.click(button="left")
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def _toggle_camera(self):
         if self._cap is None:
@@ -1335,8 +1316,8 @@ def _active_net_label() -> str:
                 active.append(name)
         if active:
             return active[0]
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="ui", severity="debug")
     return "No active adapter"
 
 class HudCanvas(QWidget):
@@ -1455,7 +1436,7 @@ class HudCanvas(QWidget):
         if self.speaking:
             return QColor(255, 69, 69, 255)
         if self.state == "LISTENING":
-            return QColor(255, 210, 60, 255)
+            return QColor(255, 195, 0, 255)
         if self.state == "THINKING":
             return QColor(255, 185, 96, 255)
         if self.state in ("EXECUTING", "PROCESSING"):
@@ -1562,15 +1543,17 @@ class HudCanvas(QWidget):
             p.drawLine(QPointF(bx, by), QPointF(bx + dx * bl, by))
             p.drawLine(QPointF(bx, by), QPointF(bx, by + dy * bl))
 
-        # center branding: ALMIGHTY in gold
+        # face text only: remove the center orb circle overlay
         title_font = QFont("Segoe UI", int(max(20, fw * 0.052)), QFont.Weight.Bold)
         p.setFont(title_font)
         y_title = cy - 25
-        p.setPen(QColor(255, 210, 60, 245))
-        p.drawText(QRectF(cx - 120, y_title, 240, 48), Qt.AlignmentFlag.AlignCenter, "ALMIGHTY")
+        p.setPen(QColor(245, 248, 255, 235))
+        p.drawText(QRectF(cx - 120, y_title, 130, 48), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, "REX")
+        p.setPen(QColor(255, 98, 98, 245))
+        p.drawText(QRectF(cx + 8, y_title, 90, 48), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "")
         p.setFont(QFont("Segoe UI", int(max(8, fw * 0.018)), QFont.Weight.Bold))
         p.setPen(QColor(190, 196, 205, 190))
-        p.drawText(QRectF(cx - 90, cy + 18, 180, 22), Qt.AlignmentFlag.AlignCenter, "AI ASSISTANT")
+        p.drawText(QRectF(cx - 90, cy + 18, 180, 22), Qt.AlignmentFlag.AlignCenter, "AI COMMAND CENTER")
 
         # keep the center clean: no extra particles
 
@@ -1585,7 +1568,7 @@ class HudCanvas(QWidget):
         elif self.state in ("PROCESSING", "EXECUTING"):
             txt, col = "AI CORE\nEXECUTING", QColor(255, 69, 69, 235)
         elif self.state == "LISTENING":
-            txt, col = "MIC STATUS\nLISTENING", QColor(255, 210, 60, 220)
+            txt, col = "MIC STATUS\nLISTENING", QColor(255, 195, 0, 220)
         else:
             txt, col = f"AI CORE\n{self.state}", QColor(255, 255, 255, 220)
 
@@ -1617,7 +1600,7 @@ class MetricBar(QWidget):
         super().__init__(parent)
         self._label = label
         self._color = color
-        self._value = 0.0       # 0â€“100
+        self._value = 0.0       # 0-100
         self._text  = "--"
         self.setFixedHeight(38)
         self.setMinimumWidth(80)
@@ -1794,7 +1777,7 @@ class TaskCard(QFrame):
         self._command_lbl.setStyleSheet(f"color: {C.WHITE}; background: transparent;")
         lay.addWidget(self._command_lbl)
 
-        self._plan_lbl = QLabel("Plan: Rex will generate a task plan after you send a command.")
+        self._plan_lbl = QLabel("Plan: REX will generate a task plan after you send a command.")
         self._plan_lbl.setWordWrap(True)
         self._plan_lbl.setFont(QFont("Segoe UI", 9))
         self._plan_lbl.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
@@ -1846,7 +1829,7 @@ class TaskCard(QFrame):
         self._title.setText(title)
         self._status_lbl.setText(desc)
         self._output_lbl.setText(desc)
-        self._plan_lbl.setText("Plan: Rex will generate a task plan after you send a command.")
+        self._plan_lbl.setText("Plan: REX will generate a task plan after you send a command.")
         self._command_lbl.setText("Command: waiting for input")
         self._pct.setText(f"{percent}%")
         self._bar.setValue(max(0, min(100, percent)))
@@ -1915,7 +1898,7 @@ class TaskCard(QFrame):
         self._workspace_locked = False
         self._title.setText("Ready")
         self._command_lbl.setText("Command: waiting for input")
-        self._plan_lbl.setText("Plan: Rex will generate a task plan after you send a command.")
+        self._plan_lbl.setText("Plan: REX will generate a task plan after you send a command.")
         self._status_lbl.setText("Status: Idle")
         self._output_lbl.setText("Output: Ready to work.")
         self._pct.setText("0%")
@@ -2127,8 +2110,8 @@ class ArtifactCard(QFrame):
             return
         try:
             os.startfile(self._path)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def _reveal_file(self):
         if not self._path or not Path(self._path).exists():
@@ -2138,8 +2121,8 @@ class ArtifactCard(QFrame):
                 subprocess.Popen(["explorer", "/select,", self._path])
             else:
                 os.startfile(str(Path(self._path).parent))
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
 
 class ChatBubble(QFrame):
@@ -2250,8 +2233,8 @@ class ChatBubble(QFrame):
             try:
                 self._browser.setMarkdown(text or "")
                 return
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
         self._browser.setHtml(_markdown_to_html(text or "", self._role))
 
     def _start_typing_animation(self):
@@ -2267,8 +2250,8 @@ class ChatBubble(QFrame):
         if self._typing_index >= len(self._full_text):
             try:
                 self._typing_timer.stop()
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
             self._render_text(self._full_text, final=True)
             QTimer.singleShot(0, self._fit_to_content)
 
@@ -2294,8 +2277,8 @@ class ChatBubble(QFrame):
             self._browser.setMaximumHeight(max(height, 24))
             self._browser.updateGeometry()
             self.updateGeometry()
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2421,7 +2404,7 @@ class ConversationFeed(QScrollArea):
         lay = QVBoxLayout(frame)
         lay.setContentsMargins(14, 12, 14, 12)
         lay.setSpacing(10)
-        title = QLabel("Try asking Rex")
+        title = QLabel("Try asking REX")
         title.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         title.setStyleSheet("color: #ffffff; background: transparent;")
         subtitle = QLabel("Create a presentation, analyze a screen, build a website, organize files, or run browser automation.")
@@ -2498,7 +2481,7 @@ class ConversationFeed(QScrollArea):
         elif "browser" in low:
             title, icon, accent = "Browser Automation Completed", "↗", "#ffbf00"
         elif "organ" in low and "file" in low:
-            title, icon, accent = "File Organization Completed", "🗂", "#37ff5f"
+            title, icon, accent = "File Organization Completed", "[ ]", "#37ff5f"
         elif "screen" in low and "analysis" in low:
             title, icon, accent = "Screen Analysis Completed", "◫", "#6fd6ff"
         return EventCard(title, text, stamp, icon=icon, accent=accent, parent=self)
@@ -2524,10 +2507,10 @@ class ConversationFeed(QScrollArea):
             attachments = msg.get("attachments") or []
             name = {
                 "user": "You",
-                "assistant": "Rex",
+                "assistant": "REX",
                 "system": "System",
                 "file": "Files",
-            }.get(role, "Rex")
+            }.get(role, "REX")
             self.add_message(role, name, content, stamp, attachments=attachments, animate=False)
         self._sync_empty_state()
         QTimer.singleShot(0, self.scroll_to_bottom)
@@ -2700,8 +2683,8 @@ class WorkspaceSidebar(QWidget):
             shadow.setColor(QColor(0, 0, 0, 72))
             shadow.setOffset(0, 12)
             self._panel.setGraphicsEffect(shadow)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
         root = QHBoxLayout(self._panel)
         root.setContentsMargins(14, 14, 12, 14)
         root.setSpacing(10)
@@ -2719,7 +2702,7 @@ class WorkspaceSidebar(QWidget):
         self._title.setStyleSheet("color: #FFFFFF; background: transparent; letter-spacing: 1px;")
         header.addWidget(self._title)
         header.addStretch()
-        self._close_btn = QPushButton("ALMIGHTY")
+        self._close_btn = QPushButton("REX")
         self._close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._close_btn.setFixedHeight(30)
         self._close_btn.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
@@ -3034,8 +3017,8 @@ class WorkspaceSidebar(QWidget):
             return
         try:
             self._store.export_conversation(convo_id, path)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def _pin_current_conversation(self):
         convo_id = self._ensure_active_conversation()
@@ -3120,8 +3103,8 @@ class WorkspaceSidebar(QWidget):
     def _hide_after_anim(self):
         try:
             self._anim.finished.disconnect(self._hide_after_anim)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
         self._panel.hide()
         self.hide()
 
@@ -3148,7 +3131,7 @@ class WorkspaceSidebar(QWidget):
         if not raw:
             return
         low = raw.lower()
-        if low.startswith(("you:", "almighty ai:")):
+        if low.startswith(("you:", "rex ai:")):
             return
         if low.startswith("sys:"):
             self.record_chat_event({"role": "system", "text": raw.split(":", 1)[1].strip(), "source": "local"})
@@ -3171,7 +3154,7 @@ class WorkspaceSidebar(QWidget):
         elif role == "assistant":
             convo_id = self._store.record_chat("assistant", text, conversation_id=convo_id, attachments=attachments)
             self._active_conversation_id = convo_id
-            self._feed.add_message("assistant", "Rex", text, _fmt_time_stamp(stamp), attachments=attachments, animate=True)
+            self._feed.add_message("assistant", "REX", text, _fmt_time_stamp(stamp), attachments=attachments, animate=True)
             self._hide_memory_banner()
         elif role == "system":
             convo_id = self._store.record_chat("system", text, conversation_id=convo_id, attachments=attachments)
@@ -3481,7 +3464,7 @@ class InlineChatWorkspace(QFrame):
             self._show_memories(self._store.search_memories(text))
         elif role == "assistant":
             self._store.record_chat("assistant", text, conversation_id=convo_id, attachments=attachments)
-            self._feed.add_message("assistant", "Rex", text, stamp, attachments=attachments)
+            self._feed.add_message("assistant", "REX", text, stamp, attachments=attachments)
             self._hide_memories()
         elif role == "system":
             self._store.record_chat("system", text, conversation_id=convo_id, attachments=attachments)
@@ -3589,7 +3572,7 @@ class LauncherControlPanel(QDialog):
         lay.setContentsMargins(18, 16, 18, 16)
         lay.setSpacing(10)
 
-        title = QLabel("ALMIGHTY CONTROL")
+        title = QLabel("REX CONTROL")
         title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         title.setStyleSheet("color: #FFFFFF; background: transparent; letter-spacing: 1px;")
         lay.addWidget(title)
@@ -3631,8 +3614,8 @@ class LauncherControlPanel(QDialog):
         self._startup_btn = mk_btn("Show Workspace On Startup", checkable=True, checked=bool(startup_workspace))
         self._show_icon_btn = mk_btn("Show Floating Icon")
         self._hide_icon_btn = mk_btn("Hide Floating Icon")
-        self._restart_btn = mk_btn("Restart Almighty")
-        self._quit_btn = mk_btn("Quit Almighty")
+        self._restart_btn = mk_btn("Restart REX")
+        self._quit_btn = mk_btn("Quit REX")
         self._open_app_btn = mk_btn("Open App")
         self._open_dev_btn = mk_btn("Open Developer Mode")
 
@@ -3659,8 +3642,8 @@ class LauncherControlPanel(QDialog):
         if fn:
             try:
                 fn(*args)
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
         self.close()
 
     def _hide_icon_confirm(self):
@@ -3675,7 +3658,7 @@ class LauncherControlPanel(QDialog):
         flay = QVBoxLayout(frame)
         flay.setContentsMargins(18, 16, 18, 16)
         flay.setSpacing(10)
-        lbl = QLabel("Hide Almighty icon?")
+        lbl = QLabel("Hide REX icon?")
         lbl.setStyleSheet("color: #FFFFFF; background: transparent; font: 700 11pt 'Segoe UI';")
         sub = QLabel("You can restore it from the system tray.")
         sub.setStyleSheet("color: rgba(255,255,255,0.65); background: transparent;")
@@ -3851,8 +3834,10 @@ class LogWidget(QScrollArea):
         tl = raw.lower()
         if tl.startswith("you:"):
             return "user", "You", raw[4:].strip()
+        if tl.startswith("rex ai:"):
+            return "assistant", "REX", raw[len("REX:"):].strip()
         if tl.startswith("rex:"):
-            return "assistant", "Rex", raw[len("Rex:"):].strip()
+            return "assistant", "REX", raw[len("REX:"):].strip()
         if tl.startswith("file:"):
             return "file", "File", raw[5:].strip()
         if tl.startswith("err:"):
@@ -3954,7 +3939,7 @@ class FileDropZone(QWidget):
 
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select a file for Almighty AI", str(Path.home()),
+            self, "Select a file for REX", str(Path.home()),
             "All Files (*.*);;"
             "Images (*.jpg *.jpeg *.png *.gif *.webp *.bmp *.svg);;"
             "Documents (*.pdf *.docx *.txt *.md *.pptx);;"
@@ -4025,7 +4010,7 @@ class _DropCanvas(QWidget):
         cx, cy = W / 2, H / 2
         p.setFont(QFont("Courier New", 20))
         p.setPen(QPen(qcol(C.PRI), 1))
-        p.drawText(QRectF(0, cy - 24, W, 32), Qt.AlignmentFlag.AlignCenter, "â¬‡")
+        p.drawText(QRectF(0, cy - 24, W, 32), Qt.AlignmentFlag.AlignCenter, ">")
         p.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
         p.setPen(QPen(qcol(C.PRI), 1))
         p.drawText(QRectF(0, cy + 12, W, 16), Qt.AlignmentFlag.AlignCenter, "Release to load")
@@ -4060,13 +4045,13 @@ class _DropCanvas(QWidget):
         p.setFont(QFont("Courier New", 6))
         p.setPen(QPen(qcol("#1e5c6a"), 1))
         par = str(path.parent)
-        if len(par) > 42: par = "â€¦" + par[-41:]
+        if len(par) > 42: par = "..." + par[-41:]
         p.drawText(QRectF(tx, H * 0.18 + 34, tw, 12),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, par)
 
         p.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
         p.setPen(QPen(qcol(C.RED, 180), 1))
-        p.drawText(QRectF(W - 34, 0, 28, H), Qt.AlignmentFlag.AlignCenter, "âœ•")
+        p.drawText(QRectF(W - 34, 0, 28, H), Qt.AlignmentFlag.AlignCenter, "'")
 
     def mousePressEvent(self, e):
         z = self._z
@@ -4110,8 +4095,8 @@ class SetupOverlay(QWidget):
             w.setStyleSheet(f"color: {color}; background: transparent;")
             return w
 
-        layout.addWidget(_lbl("â—ˆ  INITIALISATION REQUIRED", 13, True))
-        layout.addWidget(_lbl("Configure Almighty before first boot.", 9, color=C.PRI_DIM))
+        layout.addWidget(_lbl("*  INITIALIZATION REQUIRED", 13, True))
+        layout.addWidget(_lbl("Configure REX before first boot.", 9, color=C.PRI_DIM))
         layout.addSpacing(6)
 
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
@@ -4122,7 +4107,7 @@ class SetupOverlay(QWidget):
                                align=Qt.AlignmentFlag.AlignLeft))
         self._key_input = QLineEdit()
         self._key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self._key_input.setPlaceholderText("AIzaâ€¦")
+        self._key_input.setPlaceholderText("AIza...")
         self._key_input.setFont(QFont("Courier New", 10))
         self._key_input.setFixedHeight(32)
         self._key_input.setStyleSheet(f"""
@@ -4140,7 +4125,7 @@ class SetupOverlay(QWidget):
                        align=Qt.AlignmentFlag.AlignLeft))
         self._or_input = QLineEdit()
         self._or_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self._or_input.setPlaceholderText("sk-or-â€¦")
+        self._or_input.setPlaceholderText("sk-or-...")
         self._or_input.setFont(QFont("Courier New", 10))
         self._or_input.setFixedHeight(32)
         self._or_input.setStyleSheet(f"""
@@ -4170,7 +4155,7 @@ class SetupOverlay(QWidget):
 
         os_row = QHBoxLayout(); os_row.setSpacing(6)
         self._os_btns: dict[str, QPushButton] = {}
-        for key, label in [("windows","âŠž  Windows"),("mac","  macOS"),("linux","ðŸ§  Linux")]:
+        for key, label in [("windows","Windows"),("mac","macOS"),("linux","Linux")]:
             btn = QPushButton(label)
             btn.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
             btn.setFixedHeight(32)
@@ -4190,7 +4175,7 @@ class SetupOverlay(QWidget):
         layout.addWidget(self._status)
         layout.addSpacing(8)
 
-        init_btn = QPushButton("â-¸  INITIALISE SYSTEMS")
+        init_btn = QPushButton(">  INITIALIZE SYSTEMS")
         init_btn.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
         init_btn.setFixedHeight(36)
         init_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -4286,7 +4271,7 @@ class CommandBar(QWidget):
         lay.addWidget(_framed_logo(36, 24, bg="rgba(255,255,255,0.04)", border=C.BORDER_B, radius=18, inset=5))
 
         self._input = QLineEdit()
-        self._input.setPlaceholderText("Tell Rex what to do...")
+        self._input.setPlaceholderText("Tell REX what to do...")
         self._input.setFont(QFont("Segoe UI", 10))
         self._input.setFixedHeight(40)
         self._input.setStyleSheet(f"""
@@ -4462,7 +4447,7 @@ class DeveloperModeDialog(QDialog):
         title.setStyleSheet(f"color: {C.PRI};")
         root.addWidget(title)
 
-        desc = QLabel("Pick a workspace folder Almighty should use when building websites or other workspace-based tasks.")
+        desc = QLabel("Pick a workspace folder REX should use when building websites or other workspace-based tasks.")
         desc.setWordWrap(True)
         desc.setStyleSheet(f"color: {C.TEXT_DIM};")
         root.addWidget(desc)
@@ -4542,22 +4527,22 @@ class ScanningOverlay(QWidget):
         self._splash_logo = QLabel()
         self._splash_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._splash_logo.setPixmap(_logo_pixmap(160))
-        self._splash_title = QLabel("ALMIGHTY AI LITE")
+        self._splash_title = QLabel("REX")
         self._splash_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._splash_title.setFont(QFont("Segoe UI", 18, QFont.Weight.Black))
         self._splash_title.setStyleSheet("color: #ffffff; letter-spacing: 2px;")
-        self._splash_sub = QLabel("Your Intelligent Desktop Assistant")
+        self._splash_sub = QLabel("Your AI Command Center")
         self._splash_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._splash_sub.setStyleSheet(f"color: {C.TEXT_DIM};")
         self._splash_slogan = QLabel("Think. Command. Accomplish.")
         self._splash_slogan.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._splash_slogan.setStyleSheet(f"color: {C.PRI}; font-weight: 700;")
-        self._splash_status = QLabel("Initializing Almighty...")
+        self._splash_status = QLabel("Initializing REX...")
         self._splash_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._splash_status.setStyleSheet(f"color: {C.TEXT_MED};")
 
         # Boot widgets
-        self._boot_title = QLabel("ALMIGHTY AI LITE")
+        self._boot_title = QLabel("REX")
         self._boot_title.setFont(QFont("Segoe UI", 20, QFont.Weight.Black))
         self._boot_title.setStyleSheet(f"color: {C.WHITE};")
         self._boot_sub = QLabel("System Boot Sequence")
@@ -4635,11 +4620,11 @@ class ScanningOverlay(QWidget):
         # blue-white scan beam
         y = int(rect.height() * self._phase)
         beam = QLinearGradient(0, y - 140, 0, y + 140)
-        beam.setColorAt(0.0, QColor(120, 210, 255, 0))
-        beam.setColorAt(0.48, QColor(120, 210, 255, 90))
+        beam.setColorAt(0.0, QColor(255, 69, 69, 0))
+        beam.setColorAt(0.48, QColor(255, 69, 69, 90))
         beam.setColorAt(0.50, QColor(255, 255, 255, 180))
-        beam.setColorAt(0.52, QColor(120, 210, 255, 90))
-        beam.setColorAt(1.0, QColor(120, 210, 255, 0))
+        beam.setColorAt(0.52, QColor(255, 69, 69, 90))
+        beam.setColorAt(1.0, QColor(255, 69, 69, 0))
         p.fillRect(QRectF(0, y - 140, rect.width(), 280), beam)
 
         # corner brackets
@@ -4659,7 +4644,7 @@ class ScanningOverlay(QWidget):
         for i in range(6):
             r = 110 + i * 22
             alpha = 28 - i * 3
-            p.setPen(QPen(QColor(80, 170, 255, max(0, alpha)), 2))
+            p.setPen(QPen(QColor(255, 69, 69, max(0, alpha)), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(QRectF(cx - r, cy - r, r * 2, r * 2))
 
@@ -4670,7 +4655,7 @@ class ScanningOverlay(QWidget):
         p.setFont(title_font)
         p.drawText(QRectF(0, cy - 26, rect.width(), 40), Qt.AlignmentFlag.AlignCenter, self._text)
         p.setFont(sub_font)
-        p.setPen(QColor(190, 220, 255, 210))
+        p.setPen(QColor(255, 120, 120, 210))
         p.drawText(QRectF(0, cy + 18, rect.width(), 28), Qt.AlignmentFlag.AlignCenter, self._sub)
 
 
@@ -4690,7 +4675,7 @@ class BootSequenceOverlay(QWidget):
         self.setWindowOpacity(0.0)
 
         self._device_name = "DEVICE"
-        self._greeting_name = get_user_name()
+        self._greeting_name = "chuckee"
         self._phase = 0
         self._phase_text = ""
         self._sub_text = ""
@@ -4744,9 +4729,9 @@ class BootSequenceOverlay(QWidget):
                 "s": random.uniform(1.2, 2.2),
             })
 
-    def start(self, device_name: str, greeting_name: str | None = None):
+    def start(self, device_name: str, greeting_name: str = "chuckee"):
         self._device_name = (device_name or "DEVICE").strip().upper()
-        self._greeting_name = (greeting_name or get_user_name()).strip() or get_user_name()
+        self._greeting_name = (greeting_name or "chuckee").strip() or "chuckee"
         self._phase = 0
         self._phase_text = "WELCOME"
         self._sub_text = f"WELCOME, {self._device_name}"
@@ -4770,8 +4755,8 @@ class BootSequenceOverlay(QWidget):
             y = max(0, int((geo.height() - ch) / 2) - 40)
             self._center.move(x, y)
             self._center.show()
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
         self.showFullScreen()
         self.raise_()
         self.activateWindow()
@@ -4809,7 +4794,7 @@ class BootSequenceOverlay(QWidget):
     def _phase_initializing(self):
         if self._skip_requested:
             return
-        self._set_phase(1, "ALMIGHTY INITIALIZING...", "Almighty Core waking up.")
+        self._set_phase(1, "REX INITIALIZING...", "REX Core waking up.")
 
     def _phase_loading(self):
         if self._skip_requested:
@@ -4839,7 +4824,7 @@ class BootSequenceOverlay(QWidget):
             greet = "Good Afternoon"
         else:
             greet = "Good Evening"
-        self._set_phase(3, f"{greet}, {self._greeting_name}", "Almighty Lite is ready.")
+        self._set_phase(3, f"{greet}, {self._greeting_name}", "REX is ready.")
 
     def _finish_sequence(self):
         if self._skip_requested:
@@ -4871,8 +4856,8 @@ class BootSequenceOverlay(QWidget):
         for t in self._phase_timers:
             try:
                 t.stop()
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
         self._running = False
         self.setWindowOpacity(0.0)
         self.hide()
@@ -4902,8 +4887,8 @@ class BootSequenceOverlay(QWidget):
             try:
                 self._center_lay.removeWidget(w)
                 w.hide()
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
         # add boot widgets
         self._center_lay.addWidget(self._boot_title)
         self._center_lay.addWidget(self._boot_sub)
@@ -4942,14 +4927,14 @@ class BootSequenceOverlay(QWidget):
         self._progress_val = max(0, min(100, int(percent)))
         try:
             self._progress_bar.setValue(self._progress_val)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
         if tip is not None:
             self._progress_tip = tip
             try:
                 self._progress_tip_lbl.setText(tip)
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
         if self._progress_val >= 100:
             QTimer.singleShot(600, self._finish)
 
@@ -4982,11 +4967,11 @@ class BootSequenceOverlay(QWidget):
         if self._phase >= 2:
             y = int(self._beam)
             grad = QLinearGradient(0, y - 120, 0, y + 120)
-            grad.setColorAt(0.0, QColor(120, 210, 255, 0))
-            grad.setColorAt(0.48, QColor(120, 210, 255, 38))
+            grad.setColorAt(0.0, QColor(255, 69, 69, 0))
+            grad.setColorAt(0.48, QColor(255, 69, 69, 38))
             grad.setColorAt(0.50, QColor(255, 255, 255, 120))
-            grad.setColorAt(0.52, QColor(120, 210, 255, 38))
-            grad.setColorAt(1.0, QColor(120, 210, 255, 0))
+            grad.setColorAt(0.52, QColor(255, 69, 69, 38))
+            grad.setColorAt(1.0, QColor(255, 69, 69, 0))
             p.fillRect(QRectF(0, y - 120, rect.width(), 240), grad)
 
         # welcome / greeting texts
@@ -5037,8 +5022,8 @@ class BootSequenceOverlay(QWidget):
 
             # core glow
             glow = QRadialGradient(cx, cy, outer_r * 0.98)
-            glow.setColorAt(0.0, QColor(20, 80, 140, 240))
-            glow.setColorAt(0.45, QColor(10, 35, 60, 220))
+            glow.setColorAt(0.0, QColor(180, 40, 40, 240))
+            glow.setColorAt(0.45, QColor(100, 25, 25, 220))
             glow.setColorAt(0.7, QColor(255, 255, 255, 40))
             glow.setColorAt(1.0, QColor(0, 0, 0, 0))
             p.setPen(Qt.PenStyle.NoPen)
@@ -5047,8 +5032,8 @@ class BootSequenceOverlay(QWidget):
 
             # inner core
             core_grad = QRadialGradient(cx, cy, core_r * 2.2)
-            core_grad.setColorAt(0.0, QColor(60, 160, 255, 200))
-            core_grad.setColorAt(0.35, QColor(20, 70, 130, 235))
+            core_grad.setColorAt(0.0, QColor(255, 69, 69, 200))
+            core_grad.setColorAt(0.35, QColor(80, 20, 30, 235))
             core_grad.setColorAt(1.0, QColor(0, 0, 0, 0))
             p.setBrush(core_grad)
             p.drawEllipse(QRectF(cx - core_r * 2.0, cy - core_r * 2.0, core_r * 4.0, core_r * 4.0))
@@ -5056,7 +5041,7 @@ class BootSequenceOverlay(QWidget):
             # central label
             p.setPen(QColor(255, 255, 255, 220))
             p.setFont(QFont("Segoe UI", int(28 * scale), QFont.Weight.Bold))
-            p.drawText(QRectF(cx - 160 * scale, cy - 40 * scale, 320 * scale, 80 * scale), Qt.AlignmentFlag.AlignCenter, "ALMIGHTY")
+            p.drawText(QRectF(cx - 160 * scale, cy - 40 * scale, 320 * scale, 80 * scale), Qt.AlignmentFlag.AlignCenter, "REX")
 
             # phase text
             if self._phase in {1, 2, 3}:
@@ -5098,7 +5083,7 @@ class BootSequenceOverlay(QWidget):
                 p.drawText(QRectF(0, cy + 150 * scale, rect.width(), 48), Qt.AlignmentFlag.AlignCenter, self._phase_text)
                 p.setPen(QColor(220, 220, 220, 200))
                 p.setFont(QFont("Segoe UI", 14))
-                p.drawText(QRectF(0, cy + 203 * scale, rect.width(), 36), Qt.AlignmentFlag.AlignCenter, "Almighty Lite is ready.")
+                p.drawText(QRectF(0, cy + 203 * scale, rect.width(), 36), Qt.AlignmentFlag.AlignCenter, "REX is ready.")
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
@@ -5360,7 +5345,7 @@ class MeetingOverlay(QWidget):
         self._speech.setStyleSheet(f"color: {C.WHITE}; background: transparent;")
         lay.addWidget(self._speech)
 
-        self._answer = QLabel("Almighty will show the live answer here.")
+        self._answer = QLabel("REX will show the live answer here.")
         self._answer.setWordWrap(True)
         self._answer.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         self._answer.setStyleSheet(f"color: {C.WHITE}; background: transparent;")
@@ -5486,7 +5471,7 @@ class FloatingLauncher(QWidget):
                 border: 1px solid {accent};
             }}
         """)
-        self.setToolTip(f"Almighty AI\n{self._status_line}")
+        self.setToolTip(f"REX\n{self._status_line}")
 
     def _show_menu(self, global_pos):
         menu = QMenu(self)
@@ -5618,7 +5603,7 @@ class MainWindow(QMainWindow):
         self.setWindowFlag(Qt.WindowType.Tool, False)
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowIcon(self._make_window_icon())
-        self.setWindowTitle("Almighty AI")
+        self.setWindowTitle("REX")
         self.setMinimumSize(_MIN_W, _MIN_H)
         self.resize(_DEFAULT_W, _DEFAULT_H)
 
@@ -5632,7 +5617,6 @@ class MainWindow(QMainWindow):
         self.on_attention_action = None
         self.on_chat_event = None
         self.on_remote_clicked = None
-        self.on_wakeword_config_changed = None
         self._muted           = False
         self._wakeword_listening = False
         self._current_file: str | None = None
@@ -5736,8 +5720,8 @@ class MainWindow(QMainWindow):
                 data = json.loads(APP_SETTINGS_FILE.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
                     settings.update({k: data.get(k, v) for k, v in settings.items()})
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
         self._app_settings_cache = dict(settings)
         return dict(settings)
 
@@ -5790,8 +5774,8 @@ class MainWindow(QMainWindow):
                 data = json.loads(DISCORD_SETTINGS_FILE.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
                     settings.update({k: data.get(k, v) for k, v in settings.items()})
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
         if (settings.get("bot_token") or "").strip():
             settings["enabled"] = True
         return dict(settings)
@@ -5911,8 +5895,8 @@ class MainWindow(QMainWindow):
             if isinstance(data, dict):
                 data.setdefault("anthropic_api_key", "")
                 return data
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
         return {
             "gemini_api_key": "",
             "openrouter_api_key": "",
@@ -5931,10 +5915,10 @@ class MainWindow(QMainWindow):
                 winreg.KEY_READ | winreg.KEY_WRITE,
             ) as key:
                 try:
-                    value, _ = winreg.QueryValueEx(key, "Almighty AI")
+                    value, _ = winreg.QueryValueEx(key, "REX")
                     run_value = _startup_run_value()
                     if value != run_value:
-                        winreg.SetValueEx(key, "Almighty AI", 0, winreg.REG_SZ, run_value)
+                        winreg.SetValueEx(key, "REX", 0, winreg.REG_SZ, run_value)
                     return bool(value)
                 except FileNotFoundError:
                     return False
@@ -5948,10 +5932,10 @@ class MainWindow(QMainWindow):
         try:
             with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _startup_registry_key()) as key:
                 if enabled:
-                    winreg.SetValueEx(key, "Almighty AI", 0, winreg.REG_SZ, run_value)
+                    winreg.SetValueEx(key, "REX", 0, winreg.REG_SZ, run_value)
                 else:
                     try:
-                        winreg.DeleteValue(key, "Almighty AI")
+                        winreg.DeleteValue(key, "REX")
                     except FileNotFoundError:
                         pass
             return True
@@ -6019,18 +6003,18 @@ class MainWindow(QMainWindow):
     def _set_page(self, page: str):
         self._current_page = page
         if hasattr(self, "_center_stack") and isinstance(self._center_stack, QStackedWidget):
-            index = {"dashboard": 0, "home": 1, "settings": 2}.get(page, 0)
+            index = {"dashboard": 0, "home": 1, "settings": 2, "memory": 3}.get(page, 0)
             self._center_stack.setCurrentIndex(index)
         if page == "home" and hasattr(self, "_home_page"):
             try:
                 self._home_page.refresh()
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
         if page == "dashboard" and hasattr(self, "_smart_devices_section"):
             try:
                 self._smart_devices_section.refresh(force=True)
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
         if hasattr(self, "_right_panel"):
             self._right_panel.setVisible(page == "dashboard")
         if hasattr(self, "_right_stack") and isinstance(self._right_stack, QStackedWidget):
@@ -6039,18 +6023,23 @@ class MainWindow(QMainWindow):
         if self._settings_bridge and hasattr(self._settings_bridge, "set_dashboard_page"):
             try:
                 self._settings_bridge.set_dashboard_page(page == "dashboard")
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
+        if page == "memory" and hasattr(self, "_memory_panel"):
+            try:
+                self._memory_panel.refresh()
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
         if page == "settings" and hasattr(self, "_settings_page"):
             try:
                 self._settings_page.refresh()
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
         if page == "settings" and hasattr(self, "_settings_sidebar"):
             try:
                 self._settings_sidebar.refresh()
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -6161,16 +6150,16 @@ class MainWindow(QMainWindow):
             l.setStyleSheet(f"color: {color}; background: transparent;")
             return l
 
-        lay.addWidget(_badge("ALMIGHTY AI", C.PRI_DIM))
+        lay.addWidget(_badge("REX", C.PRI_DIM))
         lay.addStretch()
 
         mid = QVBoxLayout(); mid.setSpacing(1)
-        title = QLabel("ALMIGHTY AI")
+        title = QLabel("REX AI")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setFont(QFont("Courier New", 17, QFont.Weight.Bold))
         title.setStyleSheet(f"color: {C.PRI}; background: transparent;")
         mid.addWidget(title)
-        sub = QLabel(f"Lite Edition by {get_user_name()}")
+        sub = QLabel("Lite Edition by chuckee")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sub.setFont(QFont("Courier New", 7))
         sub.setStyleSheet(f"color: {C.PRI_DIM}; background: transparent;")
@@ -6205,12 +6194,12 @@ class MainWindow(QMainWindow):
                 greeting = "Good Afternoon"
             else:
                 greeting = "Good Evening"
-            name = get_user_name()
+            name = os.getenv("USERNAME") or os.getenv("USER") or "chuckee"
             self._core_lbl.setText(f"{greeting}, {name}")
         if hasattr(self, "_core_sub_lbl") and self._core_sub_lbl is not None:
             self._core_sub_lbl.setText("Ready to assist.")
         if hasattr(self, "_core_status_lbl") and self._core_status_lbl is not None:
-            self._core_status_lbl.setText("Rex is ready. Gemini 2.5 Flash · OpenRouter · Voice Connected · Memory Enabled")
+            self._core_status_lbl.setText("REX is ready. Gemini 2.5 Flash · OpenRouter · Voice Connected · Memory Enabled")
         if hasattr(self, "_cpu_lbl") and self._cpu_lbl is not None:
             self._cpu_lbl.setText(f"CPU {int(psutil.cpu_percent(interval=None))}%")
         if hasattr(self, "_ram_lbl") and self._ram_lbl is not None:
@@ -6227,7 +6216,7 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(8, 10, 8, 10)
         lay.setSpacing(6)
 
-        hdr = QLabel("â—ˆ SYS MONITOR")
+        hdr = QLabel("* SYS MONITOR")
         hdr.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
         hdr.setStyleSheet(f"color: {C.PRI}; background: transparent; "
                           f"border-bottom: 1px solid {C.BORDER}; padding-bottom: 4px;")
@@ -6297,7 +6286,7 @@ class MainWindow(QMainWindow):
         lay.setSpacing(6)
 
         def _sec(txt):
-            l = QLabel(f"â-¸ {txt}")
+            l = QLabel(f"> {txt}")
             l.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
             l.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
             return l
@@ -6315,7 +6304,7 @@ class MainWindow(QMainWindow):
         self._drop_zone.file_selected.connect(self._on_file_selected)
         lay.addWidget(self._drop_zone)
 
-        self._file_hint = QLabel("No file loaded â€” drop or click above to upload")
+        self._file_hint = QLabel("No file loaded - drop or click above to upload")
         self._file_hint.setFont(QFont("Courier New", 7))
         self._file_hint.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
         self._file_hint.setWordWrap(True)
@@ -6336,7 +6325,7 @@ class MainWindow(QMainWindow):
         self._style_mute_btn()
         lay.addWidget(self._mute_btn)
 
-        fs_btn = QPushButton("â›¶  FULLSCREEN  [F11]")
+        fs_btn = QPushButton("=  FULLSCREEN  [F11]")
         fs_btn.setFixedHeight(26)
         fs_btn.setFont(QFont("Courier New", 7))
         fs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -6357,7 +6346,7 @@ class MainWindow(QMainWindow):
     def _build_input_row(self) -> QHBoxLayout:
         row = QHBoxLayout(); row.setSpacing(5)
         self._input = QLineEdit()
-        self._input.setPlaceholderText("Type a command or questionâ€¦")
+        self._input.setPlaceholderText("Type a command or question...")
         self._input.setFont(QFont("Courier New", 9))
         self._input.setFixedHeight(30)
         self._input.setStyleSheet(f"""
@@ -6370,7 +6359,7 @@ class MainWindow(QMainWindow):
         self._input.returnPressed.connect(self._send)
         row.addWidget(self._input)
 
-        send = QPushButton("â-¸")
+        send = QPushButton(">")
         send.setFixedSize(30, 30)
         send.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
         send.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -6398,7 +6387,7 @@ class MainWindow(QMainWindow):
 
         lay.addWidget(_fl("[F4] Mute  Â·  [F11] Fullscreen"))
         lay.addStretch()
-        lay.addWidget(_fl(f"{get_user_name()}  Â·  Almighty AI  Â·  Open Source"))
+        lay.addWidget(_fl("chuckee  Â·  REX  Â·  Open Source"))
         lay.addStretch()
         lay.addWidget(_fl("Â© STARK INDUSTRIES", C.PRI_DIM))
         return w
@@ -6410,7 +6399,7 @@ class MainWindow(QMainWindow):
         icon, _ = _FILE_ICONS.get(cat, _FILE_ICONS["unknown"])
         size = _fmt_size(p.stat().st_size)
         if hasattr(self, "_file_chip") and self._file_chip:
-            self._file_chip.setText(f"Attached: {icon} {p.name}  â€¢  {size}")
+            self._file_chip.setText(f"Attached: {icon} {p.name}  -  {size}")
         self._log.append_log(f"FILE: {p.name} ({size}) loaded")
         if self.on_text_command:
             msg = (
@@ -6423,7 +6412,7 @@ class MainWindow(QMainWindow):
 
     def _browse_attachment(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Attach a file to Almighty", str(Path.home()),
+            self, "Attach a file to REX", str(Path.home()),
             "All Files (*.*);;"
             "Images (*.jpg *.jpeg *.png *.gif *.webp *.bmp *.svg);;"
             "Documents (*.pdf *.docx *.txt *.md *.pptx);;"
@@ -6518,9 +6507,9 @@ class MainWindow(QMainWindow):
             if self.on_chat_event and user_msg:
                 try:
                     self.on_chat_event({"role": "user", "text": user_msg, "source": source})
-                except Exception:
-                    pass
-        if hasattr(self, "_result_card") and low.startswith("almighty ai:"):
+                except Exception as _e:
+                    log_error(_e, context="ui", severity="debug")
+        if hasattr(self, "_result_card") and low.startswith("rex ai:"):
             reply = raw.split(":", 1)[1].strip()
             self._result_card.set_body(reply[:80] + ("…" if len(reply) > 80 else ""))
             self._result_card.show()
@@ -6529,8 +6518,8 @@ class MainWindow(QMainWindow):
             if self.on_chat_event and reply:
                 try:
                     self.on_chat_event({"role": "assistant", "text": reply, "source": source})
-                except Exception:
-                    pass
+                except Exception as _e:
+                    log_error(_e, context="ui", severity="debug")
             if self._chat_source_queue:
                 self._chat_source_queue.popleft()
         elif hasattr(self, "_result_card") and low.startswith("err:"):
@@ -6541,8 +6530,8 @@ class MainWindow(QMainWindow):
             if self.on_chat_event:
                 try:
                     self.on_chat_event({"role": "system", "text": raw.split(":", 1)[1].strip(), "source": source})
-                except Exception:
-                    pass
+                except Exception as _e:
+                    log_error(_e, context="ui", severity="debug")
             if self._chat_source_queue:
                 self._chat_source_queue.popleft()
 
@@ -6571,8 +6560,8 @@ class MainWindow(QMainWindow):
                 self._smart_devices_section.show()
                 try:
                     self._smart_devices_section.refresh(force=True)
-                except Exception:
-                    pass
+                except Exception as _e:
+                    log_error(_e, context="ui", severity="debug")
 
     def _hide_daily_briefing_card(self):
         if hasattr(self, "_briefing_card"):
@@ -6581,8 +6570,8 @@ class MainWindow(QMainWindow):
             self._smart_devices_section.show()
             try:
                 self._smart_devices_section.refresh(force=True)
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
 
     def _schedule_daily_briefing_hide(self):
         if hasattr(self, "_briefing_hide_tmr"):
@@ -6618,12 +6607,11 @@ class MainWindow(QMainWindow):
         if self._remote_overlay is not None:
             try:
                 self._remote_overlay.deleteLater()
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
             self._remote_overlay = None
 
-        warning = result[4] if len(result) >= 5 else ""
-        overlay = RemoteKeyOverlay(url, key, auto, manual, warning=warning, parent=self)
+        overlay = RemoteKeyOverlay(url, key, auto, manual, parent=self)
         overlay.set_new_key_callback(self.on_remote_clicked)
         overlay.closed.connect(lambda: setattr(self, "_remote_overlay", None))
         self._remote_overlay = overlay
@@ -6643,13 +6631,7 @@ class MainWindow(QMainWindow):
     def notify_phone_connected(self):
         if self._remote_overlay is not None:
             self._remote_overlay.mark_connected()
-        self._log_sig.emit("SYS: Phone connected to Almighty remote.")
-        try:
-            import notify
-
-            notify.notify("Almighty AI", "Phone connected to remote control.")
-        except Exception:
-            pass
+        self._log_sig.emit("SYS: Phone connected to REX remote.")
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -6684,13 +6666,13 @@ class MainWindow(QMainWindow):
             )
         if hasattr(self, "_task_card"):
             if state == "THINKING":
-                self._task_card.set_task("Working on it...", "Almighty is processing your request.", 72)
+                self._task_card.set_task("Working on it...", "REX is processing your request.", 72)
             elif state == "SPEAKING":
-                self._task_card.set_task("Responding...", "Almighty is speaking now.", 100)
+                self._task_card.set_task("Responding...", "REX is speaking now.", 100)
             elif state == "MUTED":
                 self._task_card.set_task("Microphone muted", "Voice input is paused.", 0)
             else:
-                self._task_card.set_task("Ready", "Almighty is idle and ready.", 0)
+                self._task_card.set_task("Ready", "REX is idle and ready.", 0)
         if hasattr(self, "_result_card"):
             if state == "THINKING":
                 self._result_card.set_body("Action pending")
@@ -6796,8 +6778,8 @@ class MainWindow(QMainWindow):
             if self._meeting_overlay is not None:
                 try:
                     self._meeting_overlay.raise_()
-                except Exception:
-                    pass
+                except Exception as _e:
+                    log_error(_e, context="ui", severity="debug")
         else:
             if self._meeting_overlay is not None:
                 self._meeting_overlay.hide()
@@ -6807,8 +6789,8 @@ class MainWindow(QMainWindow):
         if self.on_attention_action:
             try:
                 self.on_attention_action({"kind": "meeting", "app": "Meeting mode"}, "stop")
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
 
     def _toggle_meeting_overlay(self):
         if self._meeting_overlay is None:
@@ -6836,8 +6818,8 @@ class MainWindow(QMainWindow):
         if self._incoming_alert is not None:
             try:
                 self._incoming_alert.close()
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
             self._incoming_alert = None
 
         dlg = IncomingAlertDialog(data, None)
@@ -6860,8 +6842,8 @@ class MainWindow(QMainWindow):
         if self.on_attention_action:
             try:
                 self.on_attention_action(event, decision)
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
         self._incoming_alert = None
 
     def _show_setup(self, defaults: dict | None = None):
@@ -6904,7 +6886,7 @@ class MainWindow(QMainWindow):
                 self._overlay.deleteLater()
                 self._overlay = None
             self._apply_state("LISTENING")
-            self._log.append_log(f"SYS: Initialised. OS={os_name.upper()}. Almighty AI online.")
+            self._log.append_log(f"SYS: Initialised. OS={os_name.upper()}. REX online.")
         except Exception as e:
             self._log.append_log(f"ERR: setup failed: {e}")
             traceback.print_exc()
@@ -7060,10 +7042,10 @@ class MainWindow(QMainWindow):
         brand_lay.addWidget(_framed_logo(62, 44, bg="rgba(9,10,14,245)", border=C.BORDER_B, radius=10, inset=8))
         brand_text = QVBoxLayout()
         brand_text.setSpacing(2)
-        title = QLabel("<span style='color:#ff4545;'>ALMIGHTY</span><br><span style='color:#ffffff;'>LITE</span>")
+        title = QLabel("<span style='color:#ff4545;'>REX</span>")
         title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
         title.setStyleSheet("background: transparent;")
-        sub = QLabel("Your AI Assistant")
+        sub = QLabel("Your AI Command Center")
         sub.setFont(QFont("Segoe UI", 9))
         sub.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent; padding-top: 2px;")
         brand_text.addWidget(title)
@@ -7073,13 +7055,16 @@ class MainWindow(QMainWindow):
 
         lay.addWidget(section("Workspace"))
         self._nav_items["dashboard"] = NavItem("Dashboard", active=True, letter="[]")
-        self._nav_items["home"] = NavItem("Almighty Home", active=False, letter="H")
+        self._nav_items["home"] = NavItem("REX Home", active=False, letter="H")
         self._nav_items["settings"] = NavItem("System & Connect", letter="S")
+        self._nav_items["memory"] = NavItem("Memory", letter="M")
         self._nav_items["dashboard"].clicked.connect(lambda: activate("dashboard"))
         self._nav_items["home"].clicked.connect(lambda: activate("home"))
         self._nav_items["settings"].clicked.connect(lambda: activate("settings"))
+        self._nav_items["memory"].clicked.connect(lambda: activate("memory"))
         lay.addWidget(self._nav_items["dashboard"])
         lay.addWidget(self._nav_items["home"])
+        lay.addWidget(self._nav_items["memory"])
         lay.addWidget(self._nav_items["settings"])
 
         self._gesture_preview = GestureCameraPreview()
@@ -7109,7 +7094,7 @@ class MainWindow(QMainWindow):
         status_lay.setSpacing(5)
         online = QLabel("<span style='color:#37ff5f;'>●</span> <span style='color:#a9ffb9; font-weight:700;'>System Online</span>")
         online.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-        name = QLabel("Almighty AI")
+        name = QLabel("REX")
         name.setFont(QFont("Segoe UI", 9))
         name.setStyleSheet(f"color: {C.TEXT_MED};")
         ver = QLabel("Version 1.0.0 • Gemini 2.5 Flash")
@@ -7149,7 +7134,7 @@ class MainWindow(QMainWindow):
         self._core_sub_lbl = QLabel("Ready to assist.")
         self._core_sub_lbl.setFont(QFont("Segoe UI", 9))
         self._core_sub_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
-        self._core_status_lbl = QLabel("Rex is ready. Gemini 2.5 Flash · OpenRouter · Voice Connected · Memory Enabled")
+        self._core_status_lbl = QLabel("REX is ready. Gemini 2.5 Flash · OpenRouter · Voice Connected · Memory Enabled")
         self._core_status_lbl.setWordWrap(True)
         self._core_status_lbl.setFont(QFont("Segoe UI", 8))
         self._core_status_lbl.setStyleSheet(f"color: #9da8b7; background: transparent;")
@@ -7304,13 +7289,15 @@ class MainWindow(QMainWindow):
         cmd_lay.setSpacing(10)
         cmd_lay.addLayout(self._build_command_row())
         stage.addWidget(self._command_panel)
-        self._home_page = AlmightyHomePage()
+        self._home_page = REXHomePage()
         self._center_stack = QStackedWidget()
         self._center_stack.setStyleSheet("background: transparent; border: none;")
         self._center_stack.addWidget(w)
         self._center_stack.addWidget(self._home_page)
         self._settings_page = SystemConnectivityPage()
         self._center_stack.addWidget(self._settings_page)
+        self._memory_panel = MemoryPanel()
+        self._center_stack.addWidget(self._memory_panel)
         self._center_stack.setCurrentIndex(0)
         return self._center_stack
 
@@ -7389,7 +7376,7 @@ class MainWindow(QMainWindow):
         row.setSpacing(12)
 
         self._input = QLineEdit()
-        self._input.setPlaceholderText("Ask Almighty anything...")
+        self._input.setPlaceholderText("Ask REX anything...")
         self._input.setFont(QFont("Segoe UI", 10))
         self._input.setFixedHeight(50)
         self._input.setStyleSheet(f"""
@@ -7551,10 +7538,10 @@ class SystemConnectivitySidebar(QFrame):
         self._quick_actions = QVBoxLayout()
         self._quick_actions.setSpacing(10)
         lay.addLayout(self._quick_actions)
-        self._mk_quick_action("↻ Restart Almighty AI", QStyle.StandardPixmap.SP_BrowserReload, self._restart)
+        self._mk_quick_action("↻ Restart REX", QStyle.StandardPixmap.SP_BrowserReload, self._restart)
         self._mk_quick_action("⟳ Reload Configuration", QStyle.StandardPixmap.SP_BrowserReload, self._reload)
-        self._mk_quick_action("📁 Open Data Folder", QStyle.StandardPixmap.SP_DirOpenIcon, self._open_data_folder)
-        self._mk_quick_action("📄 View Logs", QStyle.StandardPixmap.SP_FileDialogDetailedView, self._view_logs)
+        self._mk_quick_action("[>] Open Data Folder", QStyle.StandardPixmap.SP_DirOpenIcon, self._open_data_folder)
+        self._mk_quick_action("[=] View Logs", QStyle.StandardPixmap.SP_FileDialogDetailedView, self._view_logs)
         self._mk_quick_action("⬇ Check for Updates", QStyle.StandardPixmap.SP_ArrowDown, self._check_updates)
 
         tip = QFrame()
@@ -7599,20 +7586,20 @@ class SystemConnectivitySidebar(QFrame):
                 self._bridge()._win._load_api_defaults()
                 self._bridge()._win._load_discord_settings()
                 self._bridge()._log_sig.emit("SYS: Configuration reloaded.")
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
 
     def _open_data_folder(self):
         try:
             os.startfile(str(CONFIG_DIR))
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def _view_logs(self):
         try:
             os.startfile(str(BASE_DIR))
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def _check_updates(self):
         if self._bridge() and hasattr(self._bridge(), "write_log"):
@@ -7636,20 +7623,9 @@ class SystemConnectivitySidebar(QFrame):
 
 
 class SystemConnectivityPage(QWidget):
-    # Emitted from a worker thread when an MCP "Test Connection" finishes.
-    _mcp_test_done = pyqtSignal(str, object)  # (server name, result dict)
-    # Emitted from a worker thread when the update check / apply finishes.
-    _update_check_done = pyqtSignal(object)  # result dict
-    _update_apply_done = pyqtSignal(object)  # result dict
-    _update_rollback_done = pyqtSignal(object)  # result dict
-
     def __init__(self, controller=None, parent=None):
         super().__init__(parent)
         self._controller = controller
-        self._mcp_test_done.connect(self._on_mcp_test_done)
-        self._update_check_done.connect(self._on_update_check_done)
-        self._update_apply_done.connect(self._on_update_apply_done)
-        self._update_rollback_done.connect(self._on_update_rollback_done)
         self.setObjectName("SystemConnectivityPage")
         self.setStyleSheet(f"""
             QWidget#SystemConnectivityPage {{
@@ -7823,51 +7799,6 @@ class SystemConnectivityPage(QWidget):
         r.addLayout(btn_lay)
         return row, status, api_lbl
 
-    def _save_profile(self):
-        """Persist the edited name/city to config/app_settings.json and refresh."""
-        from config.profile import save_profile
-
-        result = save_profile(
-            user_name=self._profile_name_edit.text(),
-            city=self._profile_city_edit.text(),
-        )
-        self._profile_name_edit.setText(result["user_name"])
-        self._profile_city_edit.setText(result["city"])
-        self._profile_status.setText("Profile saved ✓")
-        # Refresh the live greeting label if it is visible.
-        try:
-            win = self._ctrl()._win
-            if hasattr(win, "_core_lbl") and win._core_lbl is not None:
-                hour = time.localtime().tm_hour
-                greeting = "Good Morning" if hour < 12 else "Good Afternoon" if hour < 18 else "Good Evening"
-                win._core_lbl.setText(f"{greeting}, {result['user_name']}")
-        except Exception:
-            pass
-
-    def _toggle_wake_word(self, enabled: bool):
-        """Persist the wake-word enable toggle and live-sync the listener."""
-        settings = self._load_app_settings()
-        settings["wake_word_enabled"] = bool(enabled)
-        self._save_app_settings(settings)
-        if self.on_wakeword_config_changed is not None:
-            try:
-                self.on_wakeword_config_changed()
-            except Exception:
-                pass
-        self.write_log(f"SYS: Wake word {'enabled' if enabled else 'disabled'}.")
-
-    def _on_wake_sens_changed(self, value: int):
-        """Persist the sensitivity slider (1..100 -> 0.0..1.0) live."""
-        self._wake_sens_lbl.setText(f"{value}%")
-        settings = self._load_app_settings()
-        settings["wake_word_sensitivity"] = round(value / 100.0, 2)
-        self._save_app_settings(settings)
-        if self.on_wakeword_config_changed is not None:
-            try:
-                self.on_wakeword_config_changed()
-            except Exception:
-                pass
-
     def _build_left_column(self):
         col = QWidget()
         lay = QVBoxLayout(col)
@@ -7905,58 +7836,8 @@ class SystemConnectivityPage(QWidget):
         lay1.addWidget(self._auto_switch_btn)
         lay.addWidget(card)
 
-        # Profile (identity — name + default city)
-        profile = self._card("Profile", "Your name and default city are used in greetings, briefings, documents, and the dashboard.")
-        pl = profile.layout()
-        name_row = QHBoxLayout()
-        name_row.addWidget(QLabel("Your name"))
-        self._profile_name_edit = QLineEdit(get_user_name())
-        self._profile_name_edit.setPlaceholderText("e.g. chuckee")
-        name_row.addWidget(self._profile_name_edit, 1)
-        pl.addLayout(name_row)
-        city_row = QHBoxLayout()
-        city_row.addWidget(QLabel("Default city"))
-        self._profile_city_edit = QLineEdit(get_city())
-        self._profile_city_edit.setPlaceholderText("e.g. Saint Paul")
-        city_row.addWidget(self._profile_city_edit, 1)
-        pl.addLayout(city_row)
-        self._profile_save_btn = QPushButton("Save Profile")
-        self._profile_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._profile_save_btn.clicked.connect(self._save_profile)
-        self._profile_status = QLabel("")
-        self._profile_status.setStyleSheet(f"color: {C.GREEN};")
-        pl.addWidget(self._profile_save_btn)
-        pl.addWidget(self._profile_status)
-        lay.addWidget(profile)
-
-        # Wake Word ('Hey Rex' — on-device Vosk)
-        wake = self._card("Wake Word", "Hands-free activation: say 'Hey Rex' while the mic is muted. Runs 100% on this machine (Vosk) — muted audio never leaves your device.")
-        wl = wake.layout()
-        self._wake_enabled_btn = self._mk_toggle(
-            "Enable 'Hey Rex' wake word",
-            bool(self._load_app_settings().get("wake_word_enabled", True)),
-            self._toggle_wake_word,
-        )
-        wl.addWidget(self._wake_enabled_btn)
-        sens_row = QHBoxLayout()
-        sens_row.addWidget(QLabel("Sensitivity"))
-        self._wake_sens_slider = QSlider(Qt.Orientation.Horizontal)
-        self._wake_sens_slider.setRange(1, 100)
-        self._wake_sens_slider.setValue(int(float(self._load_app_settings().get("wake_word_sensitivity", 0.5)) * 100))
-        self._wake_sens_lbl = QLabel(f"{self._wake_sens_slider.value()}%")
-        self._wake_sens_lbl.setStyleSheet(f"color: {C.TEXT_MED}; min-width: 40px;")
-        self._wake_sens_slider.valueChanged.connect(self._on_wake_sens_changed)
-        sens_row.addWidget(self._wake_sens_slider, 1)
-        sens_row.addWidget(self._wake_sens_lbl)
-        wl.addLayout(sens_row)
-        hint = QLabel("Lower sensitivity = fewer false triggers, may miss quiet speech. Requires the vosk model in config/models/.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet(f"color: {C.TEXT_DIM}; font-size: 11px;")
-        wl.addWidget(hint)
-        lay.addWidget(wake)
-
         # Mobile connect
-        mobile = self._card("Mobile Connect", "Connect your phone and control Almighty remotely.")
+        mobile = self._card("Mobile Connect", "Connect your phone and control REX remotely.")
         ml = mobile.layout()
         self._mobile_status = QLabel("Connection Status: Ready")
         self._mobile_phone = QLabel("Phone Name: Not connected")
@@ -7995,18 +7876,30 @@ class SystemConnectivityPage(QWidget):
         lay.addWidget(attention)
 
         # Startup
-        startup = self._card("Startup", "Use Almighty with Windows startup preferences.")
+        startup = self._card("Startup", "Use REX with Windows startup preferences.")
         sl = startup.layout()
-        self._startup_launch_btn = self._mk_toggle("Launch Almighty AI when Windows starts", bool(self._load_app_settings().get("show_workspace_on_startup", False)), self._toggle_startup_from_page)
+        self._startup_launch_btn = self._mk_toggle("Launch REX when Windows starts", bool(self._load_app_settings().get("show_workspace_on_startup", False)), self._toggle_startup_from_page)
         self._startup_minimized_btn = self._mk_toggle("Launch Minimized", bool(self._load_app_settings().get("launch_minimized", False)), self._toggle_launch_minimized)
         self._startup_updates_btn = self._mk_toggle("Check for updates on startup", bool(self._load_app_settings().get("check_updates_on_startup", True)), self._toggle_update_check)
         sl.addWidget(self._startup_launch_btn)
         sl.addWidget(self._startup_minimized_btn)
         sl.addWidget(self._startup_updates_btn)
+
+        # Voice & Speech
+        voice_card = self._card("Voice & Speech", "Control how REX speaks to you.")
+        vl = voice_card.layout()
+        self._speak_when_spoken_to_btn = self._mk_toggle(
+            "Speak only when spoken to",
+            bool(self._load_app_settings().get("speak_when_spoken_to", False)),
+            self._toggle_speak_when_spoken_to,
+        )
+        vl.addWidget(self._speak_when_spoken_to_btn)
+        lay.addWidget(voice_card)
+
         lay.addWidget(startup)
 
         # Shortcuts & Pinning
-        shortcuts = self._card("Shortcuts & Pinning", "Create shortcuts and pin Almighty to your Windows system.")
+        shortcuts = self._card("Shortcuts & Pinning", "Create shortcuts and pin REX to your Windows system.")
         shl = shortcuts.layout()
         
         btn_row = QHBoxLayout()
@@ -8047,7 +7940,7 @@ class SystemConnectivityPage(QWidget):
         lay.addWidget(anim)
 
         # Discord bot
-        discord = self._card("Discord Bot", "Mirror Almighty between the app and your server.")
+        discord = self._card("Discord Bot", "Mirror REX between the app and your server.")
         dl = discord.layout()
         self._discord_defaults = self._load_discord_settings()
         self._discord_status = QLabel("Bot Status: Offline")
@@ -8082,61 +7975,7 @@ class SystemConnectivityPage(QWidget):
         dl.addWidget(self._discord_msg)
         lay.addWidget(discord)
 
-        # Licensing (Almighty Pro)
-        lic = self._card("Licensing", "MCP servers and skills are Pro features. Activate a license key to unlock them.")
-        ll = lic.layout()
-        self._lic_status = QLabel("")
-        self._lic_status.setWordWrap(True)
-        self._lic_status.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
-        ll.addWidget(self._lic_status)
-        self._lic_key_input = QLineEdit()
-        self._lic_key_input.setPlaceholderText("Paste your Pro license key")
-        self._lic_key_input.setCursorPosition(0)
-        ll.addWidget(self._lic_key_input)
-        lic_row = QHBoxLayout()
-        self._lic_activate_btn = QPushButton("Activate")
-        self._lic_activate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._lic_activate_btn.clicked.connect(self._activate_license)
-        self._lic_deactivate_btn = QPushButton("Deactivate")
-        self._lic_deactivate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._lic_deactivate_btn.clicked.connect(self._deactivate_license)
-        lic_row.addWidget(self._lic_activate_btn)
-        lic_row.addWidget(self._lic_deactivate_btn)
-        ll.addLayout(lic_row)
-        self._lic_msg = QLabel("")
-        self._lic_msg.setWordWrap(True)
-        self._lic_msg.setStyleSheet(f"color: {C.TEXT_DIM}; font-size: 11px;")
-        ll.addWidget(self._lic_msg)
-        lay.addWidget(lic)
-        self._refresh_license()
-
-        # Skills & MCP Servers
-        caps = self._card("Skills & MCP Servers", "Markdown skills the agent can load on demand, and MCP tool servers from config/mcp_servers.json.")
-        cl = caps.layout()
-        self._caps_status = QLabel("")
-        self._caps_status.setWordWrap(True)
-        self._caps_status.setStyleSheet(f"color: {C.TEXT_MED};")
-        cl.addWidget(self._caps_status)
-        self._skills_box = QWidget()
-        self._skills_lay = QVBoxLayout(self._skills_box)
-        self._skills_lay.setContentsMargins(0, 0, 0, 0)
-        self._skills_lay.setSpacing(4)
-        cl.addWidget(self._skills_box)
-        self._mcp_box = QWidget()
-        self._mcp_lay = QVBoxLayout(self._mcp_box)
-        self._mcp_lay.setContentsMargins(0, 0, 0, 0)
-        self._mcp_lay.setSpacing(8)
-        cl.addWidget(self._mcp_box)
-        row = QHBoxLayout()
-        self._caps_refresh_btn = QPushButton("Refresh")
-        self._caps_refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._caps_refresh_btn.clicked.connect(self._refresh_capabilities)
-        row.addWidget(self._caps_refresh_btn)
-        row.addStretch(1)
-        cl.addLayout(row)
-        lay.addWidget(caps)
-
-        about = self._card("About Almighty", "Almighty AI Lite information only.")
+        about = self._card("About REX", "REX information only.")
         ab = about.layout()
         about_grid = QGridLayout()
         about_grid.setHorizontalSpacing(22)
@@ -8173,7 +8012,7 @@ class SystemConnectivityPage(QWidget):
     def _build_status_box(self):
         box = self._card("System Status", "")
         lay = box.layout()
-        self._sys_online = QLabel("🟢 System Online")
+        self._sys_online = QLabel("[*] System Online")
         self._sys_online.setStyleSheet("color: #35ff75; font-weight: 700;")
         self._sys_note = QLabel("All systems are operational.")
         self._sys_note.setStyleSheet(f"color: {C.TEXT_MED};")
@@ -8183,8 +8022,7 @@ class SystemConnectivityPage(QWidget):
         self._sys_platform = QLabel(platform.system())
         self._sys_provider = QLabel("Gemini")
         self._sys_updated = QLabel(time.strftime("%d %b %Y %H:%M"))
-        self._sys_license = QLabel("Community Edition")
-        for label, val in (("Version", self._sys_version), ("Platform", self._sys_platform), ("Current AI Provider", self._sys_provider), ("Last Updated", self._sys_updated), ("License", self._sys_license)):
+        for label, val in (("Version", self._sys_version), ("Platform", self._sys_platform), ("Current AI Provider", self._sys_provider), ("Last Updated", self._sys_updated)):
             row = QHBoxLayout()
             row.addWidget(QLabel(label))
             row.addStretch(1)
@@ -8196,7 +8034,7 @@ class SystemConnectivityPage(QWidget):
         box = self._card("Quick Actions", "")
         lay = box.layout()
         actions = [
-            ("Restart Almighty AI", QStyle.StandardPixmap.SP_BrowserReload, self._restart_app),
+            ("Restart REX", QStyle.StandardPixmap.SP_BrowserReload, self._restart_app),
             ("Reload Configuration", QStyle.StandardPixmap.SP_BrowserReload, self._reload_config),
             ("Open Data Folder", QStyle.StandardPixmap.SP_DirOpenIcon, self._open_data_folder),
             ("View Logs", QStyle.StandardPixmap.SP_FileDialogDetailedView, self._view_logs),
@@ -8238,10 +8076,6 @@ class SystemConnectivityPage(QWidget):
         if self._ctrl() and hasattr(self._ctrl(), "_win"):
             return self._ctrl()._win._load_app_settings()
         return _default_app_settings()
-
-    def _save_app_settings(self, settings: dict):
-        if self._ctrl() and hasattr(self._ctrl(), "_win"):
-            self._ctrl()._win._save_app_settings(settings)
 
     def _load_discord_settings(self):
         if self._ctrl() and hasattr(self._ctrl(), "_win"):
@@ -8316,6 +8150,12 @@ class SystemConnectivityPage(QWidget):
     def _toggle_update_check(self, checked: bool):
         self._set_setting("check_updates_on_startup", bool(checked))
 
+    def _toggle_speak_when_spoken_to(self, checked: bool):
+        self._set_setting("speak_when_spoken_to", bool(checked))
+        if self._ctrl() and hasattr(self._ctrl(), "write_log"):
+            mode = "enabled" if checked else "disabled"
+            self._ctrl().write_log(f"SYS: Speak only when spoken to {mode}. REX will now stay silent unless you speak first.")
+
     def _toggle_startup_animation_from_page(self, checked: bool):
         if self._ctrl() and hasattr(self._ctrl(), "_win"):
             self._ctrl()._win._set_startup_animation_enabled(bool(checked))
@@ -8347,8 +8187,8 @@ class SystemConnectivityPage(QWidget):
         if hasattr(self, "_preview_timer") and self._preview_timer:
             try:
                 self._preview_timer.stop()
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
         self._preview_timer = QTimer(self)
         self._preview_timer.timeout.connect(self._tick_preview)
         self._preview_timer.start(24)
@@ -8378,7 +8218,7 @@ class SystemConnectivityPage(QWidget):
             self._ctrl()._win._start_discord_bot()
             self._ctrl()._win._stop_discord_bot()
             self._discord_status.setText("Bot Status: Test sent")
-            self._discord_msg.setText("Connected as Almighty#9649" if self._discord_token.text().strip() else "Bot Offline")
+            self._discord_msg.setText("Connected as REX#9649" if self._discord_token.text().strip() else "Bot Offline")
 
     def _restart_discord_from_page(self):
         if self._ctrl() and hasattr(self._ctrl(), "_win"):
@@ -8401,14 +8241,14 @@ class SystemConnectivityPage(QWidget):
     def _open_data_folder(self):
         try:
             os.startfile(str(CONFIG_DIR))
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def _view_logs(self):
         try:
             os.startfile(str(BASE_DIR))
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def _check_updates(self):
         if self._ctrl() and hasattr(self._ctrl(), "write_log"):
@@ -8468,7 +8308,7 @@ class SystemConnectivityPage(QWidget):
         token = (discord.get("bot_token") or "").strip()
         if enabled and token:
             self._discord_status.setText("Bot Status: Online")
-            self._discord_msg.setText("Connected as Almighty#9649")
+            self._discord_msg.setText("Connected as REX#9649")
         elif token:
             self._discord_status.setText("Bot Status: Offline")
             self._discord_msg.setText("Bot Offline")
@@ -8477,242 +8317,6 @@ class SystemConnectivityPage(QWidget):
             self._discord_msg.setText("Token required")
         if self._ctrl() and hasattr(self._ctrl(), "_win"):
             self._sys_provider.setText("Gemini" if app.get("default_ai_provider", "Gemini") == "Gemini" else "OpenRouter")
-        try:
-            from config.profile import load_license_state
-            lic = load_license_state()
-            if lic.tier == "pro":
-                extra = f" · expires {lic.expires}" if lic.expires else ""
-                self._sys_license.setText(f"👑 Pro — {lic.licensee or 'licensed'}{extra}")
-                self._sys_license.setStyleSheet(f"color: {C.GREEN}; font-weight: 700;")
-            else:
-                self._sys_license.setText("Community Edition")
-                self._sys_license.setStyleSheet(f"color: {C.TEXT_DIM};")
-        except Exception:
-            pass
-        self._refresh_license()
-        self._refresh_capabilities()
-
-    # ── Licensing card ────────────────────────────────────────────────────
-    def _refresh_license(self) -> None:
-        """Refresh the licensing card from the current license state."""
-        try:
-            from config.profile import load_license_state
-            state = load_license_state()
-        except Exception as exc:
-            self._lic_status.setText(f"License check unavailable: {exc}")
-            return
-        if state.tier == "pro":
-            extra = f" · expires {state.expires}" if state.expires else ""
-            self._lic_status.setText(f"👑 Almighty Pro — {state.licensee or 'licensed'}{extra}")
-            self._lic_status.setStyleSheet(f"color: {C.GREEN};")
-            self._lic_deactivate_btn.setVisible(True)
-            self._lic_key_input.setVisible(False)
-            self._lic_activate_btn.setVisible(False)
-        else:
-            self._lic_status.setText("Community Edition — free tier. MCP servers and skills are Pro features.")
-            self._lic_status.setStyleSheet(f"color: {C.TEXT_MED};")
-            self._lic_deactivate_btn.setVisible(False)
-            self._lic_key_input.setVisible(True)
-            self._lic_activate_btn.setVisible(True)
-        if state.reason and state.tier != "pro":
-            self._lic_msg.setText(f"Saved key invalid: {state.reason}")
-            self._lic_msg.setStyleSheet(f"color: {C.PRI}; font-size: 11px;")
-        else:
-            self._lic_msg.setText("")
-
-    def _activate_license(self) -> None:
-        key = (self._lic_key_input.text() or "").strip()
-        if not key:
-            self._lic_msg.setText("Enter a license key first.")
-            return
-        try:
-            from config.profile import activate_license
-            result = activate_license(key)
-        except Exception as exc:
-            result = {"ok": False, "message": str(exc), "tier": "community"}
-        self._lic_msg.setText(result.get("message", ""))
-        self._lic_msg.setStyleSheet(
-            f"color: {C.GREEN if result.get('ok') else C.PRI}; font-size: 11px;"
-        )
-        if result.get("ok"):
-            self._lic_key_input.clear()
-            if self._ctrl() and hasattr(self._ctrl(), "write_log"):
-                self._ctrl().write_log(f"SYS: {result.get('message', 'Pro activated.')}")
-        self._refresh_license()
-        self._refresh_capabilities()
-
-    def _deactivate_license(self) -> None:
-        try:
-            from config.profile import deactivate_license
-            result = deactivate_license()
-        except Exception as exc:
-            result = {"ok": False, "message": str(exc), "tier": "community"}
-        self._lic_msg.setText(result.get("message", ""))
-        self._lic_msg.setStyleSheet(f"color: {C.TEXT_MED}; font-size: 11px;")
-        if result.get("ok") and self._ctrl() and hasattr(self._ctrl(), "write_log"):
-            self._ctrl().write_log("SYS: Almighty Pro deactivated.")
-        self._refresh_license()
-        self._refresh_capabilities()
-
-    # ── Skills & MCP Servers card ─────────────────────────────────────────
-    def _clear_layout(self, layout) -> None:
-        while layout.count():
-            item = layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-
-    def _refresh_capabilities(self):
-        """Repopulate the Skills & MCP Servers card. Non-blocking on the UI
-        thread: skills are read from disk, MCP status is read without
-        starting any server. Skills + MCP servers are Pro-gated: without an
-        active license the card shows a lock note instead of rows."""
-        self._mcp_test_buttons: dict[str, QPushButton] = {}
-        try:
-            from config.profile import is_pro
-            pro = is_pro()
-        except Exception:
-            pro = False
-        if not pro:
-            self._clear_layout(self._skills_lay)
-            self._clear_layout(self._mcp_lay)
-            lock = QLabel("🔒 Skills and MCP servers require Almighty Pro. Activate a key in the Licensing card above.")
-            lock.setWordWrap(True)
-            lock.setStyleSheet(f"color: {C.TEXT_DIM}; font-size: 11px;")
-            self._skills_lay.addWidget(lock)
-            self._caps_status.setText("🔒 Pro feature — Community Edition")
-            return
-        # ── skills ──
-        self._clear_layout(self._skills_lay)
-        try:
-            from skill_manager import get_skill_manager
-            skills = get_skill_manager().all_skills()
-        except Exception as exc:
-            skills = []
-            lbl = QLabel(f"Skills unavailable: {exc}")
-            lbl.setWordWrap(True)
-            lbl.setStyleSheet(f"color: {C.PRI}; font-size: 11px;")
-            self._skills_lay.addWidget(lbl)
-        for skill in skills:
-            source = "plugin" if skill.source == "plugin" else "file"
-            desc = html_lib.escape((skill.description or "")[:160])
-            name_esc = html_lib.escape(skill.name)
-            lbl = QLabel(f"• {name_esc}  <span style='color:{C.TEXT_DIM};'>({html_lib.escape(source)})</span> — {desc}")
-            lbl.setWordWrap(True)
-            lbl.setTextFormat(Qt.TextFormat.RichText)
-            lbl.setStyleSheet(f"color: {C.TEXT_MED}; font-size: 11px;")
-            self._skills_lay.addWidget(lbl)
-        if not skills:
-            lbl = QLabel("No skills installed. Drop markdown into skills/ or add via a plugin.")
-            lbl.setWordWrap(True)
-            lbl.setStyleSheet(f"color: {C.TEXT_DIM}; font-size: 11px;")
-            self._skills_lay.addWidget(lbl)
-
-        # ── MCP servers ──
-        self._clear_layout(self._mcp_lay)
-        try:
-            from mcp_client import get_mcp_manager
-            statuses = get_mcp_manager().server_status()
-        except Exception as exc:
-            statuses = []
-            lbl = QLabel(f"MCP status unavailable: {exc}")
-            lbl.setWordWrap(True)
-            lbl.setStyleSheet(f"color: {C.PRI}; font-size: 11px;")
-            self._mcp_lay.addWidget(lbl)
-        if not statuses:
-            lbl = QLabel("No MCP servers configured. Add them to config/mcp_servers.json.")
-            lbl.setWordWrap(True)
-            lbl.setStyleSheet(f"color: {C.TEXT_DIM}; font-size: 11px;")
-            self._mcp_lay.addWidget(lbl)
-        for st in statuses:
-            self._mcp_lay.addWidget(self._build_mcp_row(st))
-
-        parts = []
-        if skills:
-            parts.append(f"{len(skills)} skill{'s' if len(skills) != 1 else ''} installed")
-        if statuses:
-            connected = sum(1 for s in statuses if s["started"])
-            parts.append(f"{connected}/{len(statuses)} MCP server{'s' if len(statuses) != 1 else ''} connected")
-        self._caps_status.setText("  ·  ".join(parts) if parts else "Nothing configured yet.")
-
-    def _build_mcp_row(self, st: dict) -> QFrame:
-        name = st.get("name", "?")
-        frame = QFrame()
-        frame.setStyleSheet("QFrame { background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; }")
-        row = QVBoxLayout(frame)
-        row.setContentsMargins(12, 10, 12, 10)
-        row.setSpacing(6)
-
-        head = QHBoxLayout()
-        name_lbl = QLabel(name)
-        name_lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        name_lbl.setStyleSheet(f"color: {C.WHITE};")
-        head.addWidget(name_lbl)
-        head.addStretch(1)
-        if st.get("started"):
-            status_text = f"Connected · {st.get('tool_count', 0)} tools"
-            status_color = C.GREEN
-        elif st.get("error"):
-            status_text = "Failed to start"
-            status_color = C.RED
-        else:
-            status_text = "Not started"
-            status_color = C.TEXT_DIM
-        status_lbl = QLabel(status_text)
-        status_lbl.setStyleSheet(f"color: {status_color}; font-size: 10px; font-weight: 700;")
-        head.addWidget(status_lbl)
-        row.addLayout(head)
-
-        # Remote (http) servers show their URL; local stdio servers show the
-        # launch command.
-        loc = (st.get("url") or "").strip() if st.get("transport") == "http" else (st.get("command") or "").strip()
-        if st.get("transport") == "http":
-            loc = "🔗 " + loc
-        cmd_lbl = QLabel(loc)
-        cmd_lbl.setWordWrap(True)
-        cmd_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; font-size: 10px;")
-        row.addWidget(cmd_lbl)
-
-        if st.get("error"):
-            err_lbl = QLabel(st["error"])
-            err_lbl.setWordWrap(True)
-            err_lbl.setStyleSheet(f"color: {C.PRI}; font-size: 10px;")
-            row.addWidget(err_lbl)
-
-        test_btn = QPushButton("Test Connection")
-        test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        test_btn.setFixedHeight(28)
-        test_btn.clicked.connect(lambda _=False, n=name: self._test_mcp_server(n))
-        row.addWidget(test_btn)
-        self._mcp_test_buttons[name] = test_btn
-        return frame
-
-    def _test_mcp_server(self, name: str):
-        btn = self._mcp_test_buttons.get(name)
-        if btn is not None:
-            btn.setEnabled(False)
-            btn.setText("Testing…")
-
-        def worker():
-            try:
-                from mcp_client import get_mcp_manager
-                result = get_mcp_manager().test_server(name)
-            except Exception as exc:
-                result = {"ok": False, "message": str(exc), "tool_count": 0}
-            self._mcp_test_done.emit(name, result)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_mcp_test_done(self, name: str, result: dict):
-        btn = self._mcp_test_buttons.get(name)
-        if btn is not None:
-            btn.setEnabled(True)
-            btn.setText("Test Connection")
-        # Re-render with the fresh (now non-starting) status.
-        self._refresh_capabilities()
-        if self._ctrl() and hasattr(self._ctrl(), "write_log"):
-            msg = f"{name}: {result.get('message', '')} ({result.get('tool_count', 0)} tools)"
-            self._ctrl().write_log(f"SYS: MCP test {'OK' if result.get('ok') else 'FAILED'} — {msg}")
 
     def _handle_create_desktop_shortcut(self):
         success, path_or_err = self._create_desktop_shortcut_logic()
@@ -8759,12 +8363,12 @@ class SystemConnectivityPage(QWidget):
                 desktop_dir = Path(os.path.expanduser("~")) / "Desktop"
                 
             desktop_dir.mkdir(parents=True, exist_ok=True)
-            shortcut_path = desktop_dir / "Almighty Ai - Premium.lnk"
+            shortcut_path = desktop_dir / "REX Ai - Premium.lnk"
             
             # Base variables
             base_dir = Path(os.path.abspath("."))
             script_path = base_dir / "main.py"
-            icon_path = base_dir / "assets" / "Almighty_AI_Logo.ico"
+            icon_path = base_dir / "assets" / "REX_Lite_Logo.ico"
             
             python_exe = sys.executable
             if not python_exe:
@@ -8789,7 +8393,7 @@ class SystemConnectivityPage(QWidget):
                 f"$Shortcut.Arguments = '{_ps_escape(shortcut_args)}'",
                 f"$Shortcut.WorkingDirectory = '{_ps_escape(str(base_dir))}'",
                 "$Shortcut.WindowStyle = 7",
-                "$Shortcut.Description = 'Launch Almighty Ai - Premium'",
+                "$Shortcut.Description = 'Launch REX Ai - Premium'",
                 f"if ('{_ps_escape(icon_value)}') {{ $Shortcut.IconLocation = '{_ps_escape(icon_value)},0' }}",
                 "$Shortcut.Save()",
             ])
@@ -8849,9 +8453,9 @@ class SystemConnectivityPage(QWidget):
             )
             
             if res.returncode == 0:
-                return True, "Almighty AI has been pinned to your Taskbar!"
+                return True, "REX has been pinned to your Taskbar!"
             else:
-                return False, "Windows restricts programmatic taskbar pinning. Please right-click the 'Almighty Ai - Premium.lnk' shortcut on your Desktop and select 'Pin to taskbar', or drag it directly onto your taskbar."
+                return False, "Windows restricts programmatic taskbar pinning. Please right-click the 'REX Ai - Premium.lnk' shortcut on your Desktop and select 'Pin to taskbar', or drag it directly onto your taskbar."
         except Exception as e:
             return False, f"Error pinning to taskbar: {e}"
 
@@ -8935,7 +8539,7 @@ class SmartDevicesSection(QFrame):
                 background: rgba(255,69,69,0.16);
             }}
         """)
-        self._open_home_btn.clicked.connect(self._open_almighty_home)
+        self._open_home_btn.clicked.connect(self._open_rex_home)
         header.addWidget(self._open_home_btn)
         root.addLayout(header)
 
@@ -8953,7 +8557,7 @@ class SmartDevicesSection(QFrame):
         empty_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
         empty_desc.setFont(QFont("Segoe UI", 8))
         empty_desc.setStyleSheet(f"color: {C.TEXT_DIM};")
-        empty_btn = QPushButton("Open Almighty Home")
+        empty_btn = QPushButton("Open REX Home")
         empty_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         empty_btn.setFixedWidth(160)
         empty_btn.setStyleSheet(f"""
@@ -8968,7 +8572,7 @@ class SmartDevicesSection(QFrame):
                 background: rgba(255,69,69,0.18);
             }}
         """)
-        empty_btn.clicked.connect(self._open_almighty_home)
+        empty_btn.clicked.connect(self._open_rex_home)
         empty_lay.addStretch(1)
         empty_lay.addWidget(empty_title)
         empty_lay.addWidget(empty_desc)
@@ -9079,7 +8683,7 @@ class SmartDevicesSection(QFrame):
     def _controller_bridge(self):
         return self._controller
 
-    def _open_almighty_home(self):
+    def _open_rex_home(self):
         bridge = self._controller_bridge()
         if bridge and hasattr(bridge, "_set_page"):
             bridge._set_page("home")
@@ -9370,18 +8974,18 @@ class _RootShim:
         pass
 
 
-class AlmightyUI:
+class REXUI:
     def __init__(self, face_path: str, size=None, *, show_immediately: bool = True):
         self._app = QApplication.instance() or QApplication(sys.argv)
         self._app.setStyle("Fusion")
         self._app.setQuitOnLastWindowClosed(False)
-        self._app.setApplicationDisplayName("Almighty AI")
+        self._app.setApplicationDisplayName("REX")
         self._app.setWindowIcon(self._make_app_icon())
         try:
             current_store = workspace_store()
             current_store.rollover_active_conversation_on_startup()
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
         self._win = MainWindow(face_path)
         self._win.set_settings_bridge(self)
         self._discord_service = DiscordBotService(
@@ -9416,7 +9020,7 @@ class AlmightyUI:
         self._win.minimized.connect(self._on_minimized)
         self._win._state_sig.connect(self._sync_launcher_state)
         self._tray = QSystemTrayIcon(self._make_app_icon(), self._app)
-        self._tray.setToolTip("Almighty AI")
+        self._tray.setToolTip("REX")
         self._tray.activated.connect(self._on_tray_activated)
         self._tray.setContextMenu(self._build_tray_menu())
         self._tray.show()
@@ -9457,8 +9061,8 @@ class AlmightyUI:
             try:
                 self._launcher.raise_()
                 self._launcher.activateWindow()
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
 
     def set_dashboard_page(self, enabled: bool):
         try:
@@ -9469,8 +9073,8 @@ class AlmightyUI:
                 self._command_bar.hide()
                 self._workspace_sidebar.hide_workspace(animate=False)
                 self._launcher.hide()
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def hide_main(self):
         self._command_bar.hide()
@@ -9486,8 +9090,8 @@ class AlmightyUI:
                 data = json.loads(APP_SETTINGS_FILE.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
                     settings.update({k: data.get(k, v) for k, v in settings.items()})
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
         self._app_settings_cache = dict(settings)
         return dict(settings)
 
@@ -9501,8 +9105,8 @@ class AlmightyUI:
             settings = self._load_app_settings()
             settings["launcher_pos"] = [int(x), int(y)]
             self._save_app_settings(settings)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def _open_developer_mode_dialog(self):
         try:
@@ -9511,8 +9115,8 @@ class AlmightyUI:
                 settings = dialog.get_settings()
                 self._save_app_settings(settings)
                 self._apply_developer_mode_ui()
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def _apply_developer_mode_ui(self):
         try:
@@ -9529,8 +9133,8 @@ class AlmightyUI:
                     self._win._developer_card.raise_()
                 else:
                     self._win._developer_card.hide()
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def _sync_launcher_state(self, state: str):
         state = (state or "idle").strip().lower()
@@ -9543,8 +9147,8 @@ class AlmightyUI:
         }.get(state, "Ready")
         try:
             self._launcher.set_state(state, detail)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def _load_discord_settings(self) -> dict:
         settings = _default_discord_settings()
@@ -9553,8 +9157,8 @@ class AlmightyUI:
                 data = json.loads(DISCORD_SETTINGS_FILE.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
                     settings.update({k: data.get(k, v) for k, v in settings.items()})
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
         if (settings.get("bot_token") or "").strip():
             settings["enabled"] = True
         return dict(settings)
@@ -9664,29 +9268,15 @@ class AlmightyUI:
             settings["last_boot_stamp"] = _current_boot_stamp()
             settings["boot_sequence_played"] = True
             self._save_app_settings(settings)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def play_boot_sequence(self, finished_callback=None):
-        if not self._should_play_boot_sequence():
-            # The boot overlay is a Windows-startup animation. On any other
-            # platform (or when not launched from Windows startup) it must
-            # never hide the main window — just show it and fire the callback.
-            try:
-                self.show_main()
-            except Exception:
-                pass
-            if finished_callback:
-                try:
-                    finished_callback()
-                except Exception:
-                    pass
-            return
         if self._boot_overlay is not None:
             try:
                 self._boot_overlay.deleteLater()
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
             self._boot_overlay = None
         self.hide_main()
         overlay = BootSequenceOverlay()
@@ -9702,14 +9292,14 @@ class AlmightyUI:
                 if self._boot_overlay is not None:
                     try:
                         self._boot_overlay.deleteLater()
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        log_error(_e, context="ui", severity="debug")
                     self._boot_overlay = None
                 if finished_callback:
                     finished_callback()
 
         overlay.finished.connect(_done)
-        overlay.start(device_name=device_name, greeting_name=get_user_name())
+        overlay.start(device_name=device_name, greeting_name="chuckee")
 
     # Thread-safe helpers for driving the boot overlay from background threads
     def boot_add_step(self, text: str):
@@ -9717,24 +9307,24 @@ class AlmightyUI:
             if not self._boot_overlay:
                 return None
             QTimer.singleShot(0, lambda: self._boot_overlay.add_step(text))
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def boot_set_step_status(self, text: str, status: str):
         try:
             if not self._boot_overlay:
                 return
             QTimer.singleShot(0, lambda: self._boot_overlay.set_step_status(text, status))
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def boot_set_progress(self, percent: int, tip: str | None = None):
         try:
             if not self._boot_overlay:
                 return
             QTimer.singleShot(0, lambda: self._boot_overlay.set_progress(percent, tip))
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def _build_tray_menu(self) -> QMenu:
         menu = QMenu()
@@ -9814,8 +9404,8 @@ class AlmightyUI:
             try:
                 self._launcher.show_at(int(launcher_pos[0]), int(launcher_pos[1]))
                 return
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
         self._launcher.show_at()
 
     def _restart_app(self):
@@ -9835,8 +9425,8 @@ class AlmightyUI:
             settings = self._load_app_settings()
             settings["show_workspace_on_startup"] = bool(enabled)
             self._save_app_settings(settings)
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def _hide_launcher_with_protection(self):
         self._show_hide_launcher_confirm()
@@ -9904,16 +9494,16 @@ class AlmightyUI:
     def _on_chat_event(self, event: dict):
         try:
             self._discord_service.mirror_chat_event(event or {})
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
         try:
             self._workspace_sidebar.record_chat_event(event or {})
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
         try:
             self._win._inline_workspace.record_chat_event(event or {})
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="ui", severity="debug")
 
     def _on_discord_config_changed(self, settings: dict):
         settings = settings or {}

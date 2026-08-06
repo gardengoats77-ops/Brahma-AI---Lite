@@ -9,6 +9,7 @@ import sys
 import threading
 from pathlib import Path
 from typing import Callable, Optional
+from core.error_handler import log_error
 
 def _load_discord_module():
     try:
@@ -35,7 +36,7 @@ from google import genai
 from or_client import client as openrouter_client
 
 
-logger = logging.getLogger("almighty.discord")
+logger = logging.getLogger("rex.discord")
 
 
 def _base_dir() -> Path:
@@ -51,8 +52,8 @@ def _load_api_keys() -> dict:
         data = json.loads(API_KEYS_FILE.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             return data
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="discord_bot", severity="debug")
     return {}
 
 
@@ -67,8 +68,8 @@ def _extract_gemini_text(response) -> str:
                 part_text = getattr(part, "text", None)
                 if part_text:
                     text_parts.append(part_text)
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="discord_bot", severity="debug")
 
     text = "".join(text_parts).strip()
     if text:
@@ -180,7 +181,7 @@ class DiscordBotService:
             except Exception as exc:
                 logger.warning("Discord channel resolve failed: %s", exc)
                 return
-        prefix = "Rex" if role == "assistant" else "You" if role == "user" else "System"
+        prefix = "REX" if role == "assistant" else "You" if role == "user" else "System"
         payload = f"**{prefix}**: {text}"
         try:
             if len(payload) <= 1900:
@@ -226,8 +227,8 @@ class DiscordBotService:
             try:
                 fut = asyncio.run_coroutine_threadsafe(client.close(), loop)
                 fut.result(timeout=8)
-            except Exception:
-                pass
+            except Exception as _e:
+                log_error(_e, context="discord_bot", severity="debug")
 
         if thread is not None and thread.is_alive():
             thread.join(timeout=8)
@@ -263,15 +264,15 @@ class DiscordBotService:
                             status=discord.Status.online,
                             activity=discord.Activity(
                                 type=discord.ActivityType.listening,
-                                name="Almighty commands",
+                                name="REX commands",
                             ),
                         )
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        log_error(_e, context="discord_bot", severity="debug")
                     self._emit_status(f"Discord bot online as {client.user}.")
                     self._emit_log(f"SYS: Discord bot connected as {client.user}.")
-                except Exception:
-                    pass
+                except Exception as _e:
+                    log_error(_e, context="discord_bot", severity="debug")
 
             @client.event
             async def on_message(message):
@@ -303,7 +304,7 @@ class DiscordBotService:
                         if self._pending_channels:
                             self._pending_channels.pop()
                         await message.reply(
-                            "I couldn’t hand that command to Almighty.",
+                            "I couldn’t hand that command to REX.",
                             mention_author=False,
                             allowed_mentions=discord.AllowedMentions.none(),
                         )
@@ -362,8 +363,8 @@ class DiscordBotService:
                 try:
                     if not client.is_closed():
                         await client.close()
-                except Exception:
-                    pass
+                except Exception as _e:
+                    log_error(_e, context="discord_bot", severity="debug")
 
         self._emit_status("Discord bot offline.")
         with self._lock:
@@ -400,7 +401,7 @@ class DiscordBotService:
         gemini_key = (keys.get("gemini_api_key") or "").strip()
         openrouter_key = (keys.get("openrouter_api_key") or "").strip()
         system_prompt = (
-            "You are Rex, the Almighty AI assistant, inside Discord. "
+            "You are REX inside Discord. "
             "Be concise, accurate, and helpful. "
             "Keep replies friendly and under 250 words unless the user asks for detail."
         )

@@ -1,6 +1,6 @@
 # Contributing
 
-Thank you for helping improve Almighty AI.
+Thank you for helping improve REX.
 
 ## Before You Start
 

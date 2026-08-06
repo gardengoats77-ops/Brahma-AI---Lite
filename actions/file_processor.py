@@ -1,5 +1,5 @@
 """
-file_processor.py — Almighty AI Universal File Processor
+file_processor.py — REX Universal File Processor
 
 Supported types:
   image   → describe, ocr, resize, convert, compress, crop
@@ -25,10 +25,20 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 
+from google import genai
+
+
+def _get_api_key() -> str:
+    config_path = Path(__file__).resolve().parent.parent / "config" / "api_keys.json"
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)["gemini_api_key"]
+
 
 def _gemini_client():
-    from actions._llm import gemini
-    return gemini("gemini-2.5-flash")
+    return genai.Client(
+        api_key=_get_api_key(),
+        http_options={"api_version": "v1beta"},
+    )
 
 
 def _detect_type(path: Path) -> str:

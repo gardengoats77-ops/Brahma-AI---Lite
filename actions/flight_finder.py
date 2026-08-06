@@ -217,7 +217,7 @@ def _format_text_report(
     page_url:    str,
 ) -> str:
     lines = [
-        "Almighty AI - Flight Search Results",
+        "REX - Flight Search Results",
         "─" * 50,
         f"Route     : {origin} → {destination}",
         f"Date      : {date}",

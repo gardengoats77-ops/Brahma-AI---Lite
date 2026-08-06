@@ -1,2 +1,2 @@
-"""Authentication helpers for Almighty AI."""
+"""Authentication helpers for REX."""
 

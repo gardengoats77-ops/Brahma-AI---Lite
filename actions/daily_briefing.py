@@ -7,25 +7,25 @@ import random
 import shutil
 import psutil
 import urllib.request
-import urllib.parse
 import json
 from pathlib import Path
 from datetime import datetime
+from core.error_handler import log_error
 
-from config.profile import DEFAULT_CITY, get_city, get_user_name
+# Fallback values
+DEFAULT_CITY = "Kalyan"
 
 def get_time_based_greeting() -> str:
-    """Returns a time-based greeting for the user."""
-    name = get_user_name()
+    """Returns a time-based greeting for chuckee."""
     hour = datetime.now().hour
     if 5 <= hour < 12:
-        greeting = f"Good morning, {name}."
+        greeting = "Good morning, chuckee."
     elif 12 <= hour < 17:
-        greeting = f"Good afternoon, {name}."
+        greeting = "Good afternoon, chuckee."
     elif 17 <= hour < 22:
-        greeting = f"Good evening, {name}."
+        greeting = "Good evening, chuckee."
     else:
-        greeting = f"Welcome back, {name}."
+        greeting = "Welcome back, chuckee."
         
     random_suffixes = [
         "Ready to help.",
@@ -35,64 +35,45 @@ def get_time_based_greeting() -> str:
     ]
     return f"{greeting} {random.choice(random_suffixes)}"
 
-# In-process TTL cache: wttr.in refreshes ~every 15 min, so 10 min is safe
-# and keeps repeated weather questions (briefing + on-demand) off the network.
-_WEATHER_CACHE: dict[str, tuple[float, dict]] = {}
-_CACHE_TTL_S = 600
-
-
-def _fetch_wttr_json(city: str) -> dict | None:
-    """Raw wttr.in j1 fetch. Returns None on any failure (not cached)."""
+def fetch_weather_info(city: str = DEFAULT_CITY) -> str:
+    """Fetches real-time weather from wttr.in in JSON format."""
     try:
-        url = f"https://wttr.in/{urllib.parse.quote(city)}?format=j1"
+        url = f"https://wttr.in/{city}?format=j1"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=3) as response:
-            return json.loads(response.read().decode('utf-8'))
+            data = json.loads(response.read().decode('utf-8'))
+            
+            # Parse current condition
+            current = data.get("current_condition", [{}])[0]
+            temp = current.get("temp_C", "unknown")
+            desc = current.get("weatherDesc", [{}])[0].get("value", "").lower()
+            
+            # Find max chance of rain in today's weather
+            chance_of_rain = None
+            weather_days = data.get("weather", [])
+            if weather_days:
+                today_weather = weather_days[0]
+                hourly = today_weather.get("hourly", [])
+                chances = []
+                for hour in hourly:
+                    chance = hour.get("chanceofrain")
+                    if chance is not None:
+                        try:
+                            chances.append(int(chance))
+                        except ValueError:
+                            pass
+                if chances:
+                    chance_of_rain = max(chances)
+            
+            rain_str = ""
+            if chance_of_rain is not None and chance_of_rain > 0:
+                rain_str = f" with a {chance_of_rain} percent chance of rain"
+                
+            weather_desc_str = f" and {desc}" if desc else ""
+            return f"Today's weather in {city} is {temp} degrees{weather_desc_str}{rain_str}."
     except Exception as e:
         print(f"[DailyBriefing] Weather fetch failed: {e}")
-        return None
-
-
-def fetch_weather_info(city: str | None = None) -> str | None:
-    """Real-time weather summary from wttr.in (cached per city for _CACHE_TTL_S).
-
-    Returns None if the fetch fails — callers degrade honestly.
-    """
-    city = (city or get_city() or DEFAULT_CITY).strip()
-    key = city.lower()
-    now = time.monotonic()
-    hit = _WEATHER_CACHE.get(key)
-    if hit and now - hit[0] < _CACHE_TTL_S:
-        data = hit[1]
-    else:
-        data = _fetch_wttr_json(city)
-        if data is not None:
-            if len(_WEATHER_CACHE) > 64:
-                _WEATHER_CACHE.clear()  # keep the dict bounded; stale keys re-fetch anyway
-            _WEATHER_CACHE[key] = (now, data)
-    if data is None:
-        return None
-
-    current = data.get("current_condition", [{}])[0]
-    temp = current.get("temp_C", "unknown")
-    desc = current.get("weatherDesc", [{}])[0].get("value", "").lower().strip()
-
-    # Max chance of rain across today's hourly forecast
-    weather_days = data.get("weather", [])
-    hourly = weather_days[0].get("hourly", []) if weather_days else []
-    chances = []
-    for hour in hourly:
-        chance = hour.get("chanceofrain")
-        if chance is not None:
-            try:
-                chances.append(int(chance))
-            except ValueError:
-                pass
-    chance_of_rain = max(chances) if chances else None
-
-    rain_str = f" with a {chance_of_rain} percent chance of rain" if chance_of_rain and chance_of_rain > 0 else ""
-    weather_desc_str = f" and {desc}" if desc else ""
-    return f"Today's weather in {city} is {temp} degrees{weather_desc_str}{rain_str}."
+        return f"Today's weather in {city} is mild with clear skies."
 
 def get_system_status_info() -> tuple[str, dict]:
     """Collects system status metrics from the OS."""
@@ -111,8 +92,8 @@ def get_system_status_info() -> tuple[str, dict]:
             state["power_plugged"] = plugged
         else:
             status_parts.append("Your system is running on wall power.")
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.daily_briefing", severity="warning")
         
     # CPU & RAM info
     try:
@@ -120,16 +101,16 @@ def get_system_status_info() -> tuple[str, dict]:
         ram = int(psutil.virtual_memory().percent)
         cpu_speed_str = "low" if cpu < 30 else "moderate" if cpu < 70 else "high"
         status_parts.append(f"CPU usage is {cpu_speed_str} at {cpu} percent, and RAM usage is at {ram} percent.")
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.daily_briefing", severity="warning")
         
     # Storage remaining
     try:
         total, used, free = shutil.disk_usage(os.path.expanduser("~"))
         free_gb = int(free / (1024 ** 3))
         status_parts.append(f"You have {free_gb} gigabytes of storage remaining on your primary drive.")
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.daily_briefing", severity="warning")
         
     # Internet status
     try:
@@ -159,8 +140,8 @@ def get_workspace_summary_info() -> tuple[str, dict]:
                 summary_parts.append(f"I found {downloads_count} files in your Downloads folder.")
             else:
                 summary_parts.append("Your Downloads folder is clean.")
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.daily_briefing", severity="warning")
     state["downloads_count"] = downloads_count
             
     # Screenshots count
@@ -173,12 +154,12 @@ def get_workspace_summary_info() -> tuple[str, dict]:
             screenshots_count += len([f for f in downloads_dir.iterdir() if f.is_file() and "screenshot" in f.name.lower()])
         if screenshots_count > 0:
             summary_parts.append(f"There are {screenshots_count} screenshots saved on your system.")
-    except Exception:
-        pass
+    except Exception as _e:
+        log_error(_e, context="actions.daily_briefing", severity="warning")
     state["screenshots_count"] = screenshots_count
         
     # Recent workspace project
-    projects_dir = Path.home() / "Desktop" / "AlmightyProjects"
+    projects_dir = Path.home() / "Desktop" / "REXProjects"
     recent_project_name = None
     recent_project_time = 0
     if projects_dir.exists():
@@ -189,8 +170,8 @@ def get_workspace_summary_info() -> tuple[str, dict]:
                 recent_project_name = subdirs[0].name.replace("-", " ").title()
                 recent_project_time = subdirs[0].stat().st_mtime
                 summary_parts.append(f"Your most active workspace is {recent_project_name}.")
-        except Exception:
-            pass
+        except Exception as _e:
+            log_error(_e, context="actions.daily_briefing", severity="warning")
             
     state["recent_project_name"] = recent_project_name
     state["recent_project_time"] = recent_project_time
@@ -231,7 +212,7 @@ def compile_daily_briefing(settings: dict) -> str:
     if settings.get("daily_briefing_voice_greeting", True):
         briefing_sections.append(get_time_based_greeting())
     else:
-        briefing_sections.append(f"Welcome back, {get_user_name()}.")
+        briefing_sections.append("Welcome back, chuckee.")
         
     # Collect weather and system status and workspace status
     system_state = {}
@@ -239,9 +220,7 @@ def compile_daily_briefing(settings: dict) -> str:
     
     # 2. Weather
     if settings.get("daily_briefing_include_weather", True):
-        weather = fetch_weather_info()
-        if weather:
-            briefing_sections.append(weather)
+        briefing_sections.append(fetch_weather_info())
         
     # 3. System Status
     if settings.get("daily_briefing_include_system_status", True):

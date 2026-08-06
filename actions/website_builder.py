@@ -13,6 +13,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 from typing import Any
+from core.error_handler import log_error
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -42,8 +43,9 @@ def _load_json(path: Path, fallback: dict[str, Any] | None = None) -> dict[str, 
             data = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 return data
-    except Exception:
-        pass
+    except Exception as _e:
+
+        log_error(_e, context="actions.website_builder", severity="warning")
     return dict(fallback or {})
 
 
@@ -370,8 +372,8 @@ def _fallback_spec(parameters: dict[str, Any]) -> dict[str, Any]:
         "A polished modern website.",
     )
     site_name = _sanitize_text(
-        str(parameters.get("site_name") or parameters.get("title") or "Almighty Project"),
-        "Almighty Project",
+        str(parameters.get("site_name") or parameters.get("title") or "REX Project"),
+        "REX Project",
     )
     calc_request = _is_calculator_request(f"{site_name} {brief}")
     layout_mode = _choose_layout_mode(f"{site_name} {brief}")
@@ -392,7 +394,7 @@ def _fallback_spec(parameters: dict[str, Any]) -> dict[str, Any]:
             "title": site_name,
             "layout_mode": layout_mode,
             "hero": {
-                "eyebrow": "Built with Almighty",
+                "eyebrow": "Built with REX",
                 "title": site_name,
                 "subtitle": "A fresh build composed from your brief.",
                 "primary_cta": "Open Preview",
@@ -404,7 +406,7 @@ def _fallback_spec(parameters: dict[str, Any]) -> dict[str, Any]:
 
     if project_type == "app":
         pages[0]["hero"] = {
-            "eyebrow": "Built with Almighty",
+            "eyebrow": "Built with REX",
             "title": site_name,
             "subtitle": "A dashboard-like experience with live workspace panels.",
             "primary_cta": "Open Workspace",
@@ -440,8 +442,8 @@ def _generate_spec(parameters: dict[str, Any]) -> dict[str, Any]:
         "",
     )
     site_name = _sanitize_text(
-        str(parameters.get("site_name") or parameters.get("title") or "Almighty Project"),
-        "Almighty Project",
+        str(parameters.get("site_name") or parameters.get("title") or "REX Project"),
+        "REX Project",
     )
     if not brief:
         return _fallback_spec(parameters)
@@ -828,7 +830,7 @@ h1 { margin: 0 0 10px; font-size: clamp(2.5rem, 6vw, 4.8rem); line-height: .95; 
 }
 """
         js = """
-const STORAGE_KEY = 'almighty.groceries.items';
+const STORAGE_KEY = 'rex.groceries.items';
 const input = document.getElementById('itemInput');
 const addButton = document.getElementById('addItemBtn');
 const list = document.getElementById('groceryList');
@@ -1240,7 +1242,7 @@ def _generate_code_bundle(parameters: dict[str, Any]) -> dict[str, Any]:
 You are a senior frontend engineer. Create a fresh website from scratch and return only file outputs.
 
 Hard rules:
-- Do not mention Almighty, Codex, or any assistant branding in the site content.
+- Do not mention REX, Codex, or any assistant branding in the site content.
 - Do not use a starter template or placeholder filler.
 - Make the site feel specific to the brief.
 - Use semantic HTML, responsive CSS, and working JavaScript.
@@ -1403,7 +1405,7 @@ def _normalize_page(page: dict[str, Any], site_name: str, brief: str, idx: int) 
     if not normalized_sections:
         normalized_sections = _fallback_spec({"site_name": site_name, "description": brief})["pages"][0]["sections"]
     hero_data = {
-        "eyebrow": _sanitize_text(str(hero.get("eyebrow") or ("Built with Almighty" if idx == 0 else "Project Page")), "Built with Almighty"),
+        "eyebrow": _sanitize_text(str(hero.get("eyebrow") or ("Built with REX" if idx == 0 else "Project Page")), "Built with REX"),
         "title": _sanitize_text(str(hero.get("title") or title), title),
         "subtitle": _sanitize_text(str(hero.get("subtitle") or brief), brief),
         "primary_cta": _sanitize_text(str(hero.get("primary_cta") or "Get Started"), "Get Started"),
@@ -1525,7 +1527,7 @@ def _render_workspace(section: dict[str, Any]) -> str:
     return f"""
       <div class="workspace-shell">
         <aside class="workspace-sidebar">
-          <div class="sidebar-brand">Almighty Workspace</div>
+          <div class="sidebar-brand">REX Workspace</div>
           <div class="sidebar-note">{_html(section.get("subtitle") or "Dashboard-style layout with live panels.")}</div>
         </aside>
         <div class="workspace-main">
@@ -1776,7 +1778,7 @@ def _render_page_html(spec: dict[str, Any], page: dict[str, Any], pages: list[di
       <span class="brand-mark"></span>
       <div>
         <strong>{_html(spec.get("site_name") or "Website")}</strong>
-        <span>{_html(tagline or "Generated with Almighty")}</span>
+        <span>{_html(tagline or "Generated with REX")}</span>
       </div>
     </div>
     <button class="nav-toggle" type="button" aria-label="Toggle navigation">Menu</button>
@@ -1824,7 +1826,7 @@ def _render_page_html(spec: dict[str, Any], page: dict[str, Any], pages: list[di
   <footer class="footer reveal">
     <div>
       <strong>{_html(spec.get("site_name") or "Website")}</strong>
-      <p>{_html(tagline or "Generated with Almighty")}</p>
+      <p>{_html(tagline or "Generated with REX")}</p>
     </div>
     <a class="btn btn-secondary" href="#top">Back to top</a>
   </footer>
@@ -1855,7 +1857,7 @@ def _render_page_html(spec: dict[str, Any], page: dict[str, Any], pages: list[di
       <span class="brand-mark"></span>
       <div>
         <strong>{_html(spec.get("site_name") or "Website")}</strong>
-        <span>{_html(tagline or "Generated with Almighty")}</span>
+        <span>{_html(tagline or "Generated with REX")}</span>
       </div>
     </div>
     <button class="nav-toggle" type="button" aria-label="Toggle navigation">Menu</button>
@@ -1865,7 +1867,7 @@ def _render_page_html(spec: dict[str, Any], page: dict[str, Any], pages: list[di
   <main class="layout-{_html(layout_mode)}">
     <section class="hero hero--{_html(layout_mode)} reveal">
       <div class="hero-copy">
-        <p class="eyebrow">{_html(hero.get("eyebrow") or "Built with Almighty")}</p>
+        <p class="eyebrow">{_html(hero.get("eyebrow") or "Built with REX")}</p>
         <h1>{_html(hero.get("title") or title)}</h1>
         <p class="lead">{_html(hero.get("subtitle") or tagline)}</p>
         <div class="hero-actions">
@@ -1896,7 +1898,7 @@ def _render_page_html(spec: dict[str, Any], page: dict[str, Any], pages: list[di
   <footer class="footer reveal">
     <div>
       <strong>{_html(spec.get("site_name") or "Website")}</strong>
-      <p>{_html(tagline or "Generated with Almighty")}</p>
+      <p>{_html(tagline or "Generated with REX")}</p>
     </div>
     <a class="btn btn-secondary" href="#top">Back to top</a>
   </footer>
@@ -2904,7 +2906,7 @@ def _render_readme(spec: dict[str, Any], port: int) -> str:
     page_names = "\n".join(f"- `{page.get('slug')}.html`" if page.get("slug") != "index" else "- `index.html`" for page in spec.get("pages", []))
     return f"""# {spec.get("site_name") or "Website"}
 
-Generated by Almighty AI.
+Generated by REX.
 
 ## Open
 - Source files: VS Code
@@ -2992,8 +2994,9 @@ def _open_chrome(url: str) -> bool:
         try:
             subprocess.Popen([executable, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=False)
             return True
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="actions.website_builder", severity="warning")
 
     try:
         webbrowser.open(url)
@@ -3035,8 +3038,9 @@ def website_builder(parameters: dict[str, Any], player=None) -> str:
     if player:
         try:
             player.write_log(f"[WebsiteBuilder] Writing project into {project_dir}")
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="actions.website_builder", severity="warning")
 
     bundle = _generate_code_bundle(params)
     files = bundle.get("files") if isinstance(bundle.get("files"), dict) else {}
@@ -3072,8 +3076,9 @@ def website_builder(parameters: dict[str, Any], player=None) -> str:
     if not _wait_for_port(port, timeout=10.0):
         try:
             server.terminate()
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="actions.website_builder", severity="warning")
         return f"Website files were created in {project_dir}, but the local preview server did not start."
 
     url = f"http://127.0.0.1:{port}"
@@ -3082,14 +3087,16 @@ def website_builder(parameters: dict[str, Any], player=None) -> str:
 
     try:
         urllib.request.urlopen(url, timeout=2).read(1)
-    except Exception:
-        pass
+    except Exception as _e:
+
+        log_error(_e, context="actions.website_builder", severity="warning")
 
     if player:
         try:
             player.write_log(f"[WebsiteBuilder] Preview ready at {url}")
-        except Exception:
-            pass
+        except Exception as _e:
+
+            log_error(_e, context="actions.website_builder", severity="warning")
 
     opened = []
     opened.append("VS Code" if vscode_ok else "VS Code not found")

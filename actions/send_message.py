@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pyautogui
 import pyperclip
+from core.error_handler import log_error
 
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.08
@@ -146,8 +147,9 @@ def _upload_instagram_media(media_path: str, caption: str = "", mode: str = "pos
             try:
                 pyautogui.write(caption, interval=0.03)
                 time.sleep(0.2)
-            except Exception:
-                pass
+            except Exception as _e:
+
+                log_error(_e, context="actions.send_message", severity="warning")
 
         # Advance through the common Instagram flow to the share step.
         for _ in range(4):
