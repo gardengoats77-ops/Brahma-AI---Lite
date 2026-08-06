@@ -73,21 +73,39 @@ class HailoEngine:
         """Open VDevice, load HEF, configure network group + vstreams."""
         self._hef = HEF(self.hef_path)
         self._vdevice = VDevice()
-        # HailoRT 5.1.1 API: ConfigureParams.create_from_hef(hef, interface)
-        cfg_params = ConfigureParams.create_from_hef(
-            self._hef, HailoStreamInterface.PCIe
-        )
-        self._network_group = self._vdevice.configure(self._hef, cfg_params)[0]
-        self._inputs = self._network_group.make_input_vstream_params(
-            src_type=HailoStreamInterface.PCIe
-        )
-        self._outputs = self._network_group.make_output_vstream_params(
-            dest_type=HailoStreamInterface.PCIe
-        )
+        try:
+            # HailoRT 5.1.1 API: ConfigureParams.create_from_hef(hef, interface)
+            cfg_params = ConfigureParams.create_from_hef(
+                self._hef, HailoStreamInterface.PCIe
+            )
+            self._network_group = self._vdevice.configure(self._hef, cfg_params)[0]
+            self._inputs = self._network_group.make_input_vstream_params(
+                src_type=HailoStreamInterface.PCIe
+            )
+            self._outputs = self._network_group.make_output_vstream_params(
+                dest_type=HailoStreamInterface.PCIe
+            )
+        except Exception:
+            # If configure() fails (e.g. HAILO_NOT_IMPLEMENTED in this build,
+            # or HAILO_OUT_OF_PHYSICAL_DEVICES from hailo-ollama), close the
+            # VDevice to release /dev/hailo0 so another process can use it.
+            self._close()
+            raise
 
     @property
     def available(self) -> bool:
         return self._available
+
+    def _close(self) -> None:
+        """Release /dev/hailo0 so another process can use the NPU."""
+        try:
+            if self._vdevice is not None:
+                self._vdevice.close()
+        except Exception:
+            pass
+        self._vdevice = None
+        self._hef = None
+        self._network_group = None
 
     def complete(self, prompt: str, max_tokens: int = 128) -> str:
         """Stub completion: feed tokenized prompt to NPU, return decoded text.
