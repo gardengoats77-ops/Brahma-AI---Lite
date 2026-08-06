@@ -24,7 +24,7 @@ def test_hailo_engine_unavailable_when_hef_missing():
     fake_hailo.HEF = mock.MagicMock()
     fake_hailo.VDevice = mock.MagicMock()
     fake_hailo.HailoStreamInterface = mock.MagicMock()
-    fake_hailo.ConfigureContext = mock.MagicMock()
+    fake_hailo.ConfigureParams = mock.MagicMock()
     with mock.patch.dict("sys.modules", {"hailo_platform": fake_hailo}):
         from pi.hailo_engine import HailoEngine
         eng = HailoEngine(hef_path="/nonexistent/model.hef", model_name="test")

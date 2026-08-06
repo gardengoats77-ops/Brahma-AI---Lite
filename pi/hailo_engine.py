@@ -35,7 +35,7 @@ import numpy as np
 log = logging.getLogger("hailo.engine")
 
 try:
-    from hailo_platform import HEF, VDevice, HailoStreamInterface, ConfigureContext
+    from hailo_platform import HEF, VDevice, HailoStreamInterface, ConfigureParams
     _HAILO_IMPORTED = True
 except Exception as e:  # noqa: BLE001
     log.info("hailo_platform not importable — NPU backend disabled: %s", e)
@@ -73,7 +73,10 @@ class HailoEngine:
         """Open VDevice, load HEF, configure network group + vstreams."""
         self._hef = HEF(self.hef_path)
         self._vdevice = VDevice()
-        cfg_params = self._hef.create_configure_params(ConfigureContext.SDK)
+        # HailoRT 5.1.1 API: ConfigureParams.create_from_hef(hef, interface)
+        cfg_params = ConfigureParams.create_from_hef(
+            self._hef, HailoStreamInterface.PCIe
+        )
         self._network_group = self._vdevice.configure(self._hef, cfg_params)[0]
         self._inputs = self._network_group.make_input_vstream_params(
             src_type=HailoStreamInterface.PCIe
