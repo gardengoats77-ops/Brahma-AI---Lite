@@ -1,37 +1,58 @@
-Brahma Source-Available License
-Version 1.0
+Almighty AI Source-Available License
+Version 2.0
 
 Copyright (c) 2026 Suryaansh Tiwari
 
 This software and its source code are provided under the terms below.
 This is not an open source license as defined by the Open Source Initiative.
 
-1. Permission granted
+Almighty AI is distributed under a dual-license model:
+
+  - The Community Edition, governed by Sections 1-2 below, is free for
+    personal, educational, and internal business use.
+  - Any other commercial use requires a paid commercial license from the
+    copyright holder (Section 3).
+
+1. Community Edition — granted rights
 
 You may:
 
 - Use the software for personal, educational, and internal business purposes.
 - Study, inspect, and modify the source code for your own use.
 - Share unmodified copies of the software as long as you keep this license,
-  preserve all copyright notices, and do not remove Brahma branding.
+  preserve all copyright notices, and do not remove Almighty AI branding.
 - Deploy the software privately within your own environment.
 
-2. Restrictions
+2. Community Edition — restrictions
 
 You may not, without prior written permission from Suryaansh Tiwari:
 
 - Rebrand, rename, or republish the software as your own product.
-- Remove, obscure, or replace Brahma branding, logos, attributions, or notices.
+- Remove, obscure, or replace Almighty AI branding, logos, attributions, or notices.
 - Distribute modified versions publicly under a different name or identity.
 - Claim authorship, ownership, sponsorship, or endorsement of the software.
-- Use the Brahma name, logo, or related marks in a way that suggests
+- Use the Almighty AI name, logo, or related marks in a way that suggests
   affiliation or endorsement beyond this license.
 
-3. Commercial use
+3. Commercial licensing
 
-Commercial use is permitted only if it does not violate the restrictions above
-and does not involve rebranding, resale as a competing product, or misrepresenting
-the origin of the software.
+The Community Edition grants above do not cover commercial exploitation beyond
+internal business use. A paid commercial license is required for any of the
+following:
+
+- Distributing the software, or modified versions of it, as part of a commercial
+  product, installer, or paid service.
+- Offering the software or modified versions as a hosted service, SaaS, or
+  remotely managed assistant for third parties.
+- White-labeling, rebranding, or reselling the software to customers.
+- Bundling the software with paid hardware or accessories for resale.
+- Monetizing derivative works, plugins, or extensions sold to end users.
+
+Commercial licenses are granted individually by the copyright holder on agreed
+terms (including fees, scope, territory, and duration) set out in writing.
+Contact the copyright holder through the project's official repository to
+request a commercial license. Revenue from commercial licensing and sponsored
+development is what keeps the Community Edition free.
 
 4. Termination
 
@@ -51,3 +72,9 @@ IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY CLAIM,
 DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR
 OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE
 OR OTHER DEALINGS IN THE SOFTWARE.
+
+7. General
+
+If any provision of this license is held to be invalid or unenforceable, the
+remaining provisions remain in full force and effect. A failure to enforce a
+provision is not a waiver of it.
