@@ -1,229 +1,192 @@
 """Whisplay HAT live dashboard for the REX desktop GUI.
 
-Drives the small SPI TFT (via :class:`WhisplayDisplay`) with live status:
-voice state, CPU/RAM, temperature, IP, and Hailo NPU health. Also watches
-a physical push button (lgpio) and fires a callback on press so the GUI can
-toggle push-to-talk.
+Uses the vendored PiSugar :class:`WhisplayBoard` driver (correct Pi 5 pin
+mapping: backlight GPIO22 active-LOW, button GPIO17, gpiochip4, 240x280
+RGB565) to paint a live status matrix and expose a physical push-to-talk
+button.
 
-Everything is optional at runtime — missing display, missing GPIO, or
-missing lgpio all degrade to logged no-ops. The GUI must never block on
-this module.
+Everything is optional at runtime — missing board, GPIO, or deps degrade to
+logged no-ops. The GUI must never block on this module.
 """
 from __future__ import annotations
 
 import logging
-import subprocess
+import shutil
+import socket
 import threading
 import time
 from typing import Callable, Optional
 
+import numpy as np
+
+try:
+    from pi.whisplay_board import WhisplayBoard  # type: ignore
+    _BOARD_AVAILABLE = True
+    _BOARD_IMPORT_ERR = None
+except Exception as e:  # noqa: BLE001
+    _BOARD_AVAILABLE = False
+    _BOARD_IMPORT_ERR = e
+
 log = logging.getLogger("whisplay.dashboard")
 
-try:
-    import lgpio
-    _LGPIO_AVAILABLE = True
-except Exception as e:  # noqa: BLE001
-    log.info("lgpio not available — button disabled: %s", e)
-    _LGPIO_AVAILABLE = False
-
-try:
-    from pi.whisplay_display import WhisplayDisplay
-    _DISPLAY_AVAILABLE = True
-except Exception as e:  # noqa: BLE001
-    log.info("WhisplayDisplay unavailable — screen disabled: %s", e)
-    _DISPLAY_AVAILABLE = False
-
-# Default button GPIO (BCM). GPIO16 is free on this HAT (DC=17/RST=22 used
-# by the SPI panel, backlight on 23 held by kernel). Active-low with the
-# internal pull-up: pressed -> line reads 0.
-_BUTTON_GPIO = 16
-_DEBOUNCE_S = 0.12
-_UPDATE_INTERVAL_S = 2.0
+W = 240
+H = 280
+_BG = (7, 11, 18)
+_FG = (0, 255, 160)
+_DIM = (120, 140, 160)
+_ERR = (255, 80, 80)
+_OK = (40, 220, 120)
+_FONT = ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 5)
+_FONT_BIG = ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", 13)
 
 
-def _hailo_ok() -> bool:
-    """Quick NPU health check via hailortcli (cheap, ~50ms)."""
+def _rgb565(image) -> bytes:
+    """Convert a Pillow RGB image to raw big-endian RGB565 bytes."""
+    arr = np.asarray(image.convert("RGB"), dtype=np.uint16)
+    r, g, b = arr[..., 0], arr[..., 1], arr[..., 2]
+    rgb = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+    return rgb.astype(">u2").tobytes()
+
+
+def _cpu() -> float:
     try:
-        r = subprocess.run(
-            ["hailortcli", "fw-control", "identify"],
-            capture_output=True, text=True, timeout=3,
-        )
-        return r.returncode == 0
-    except Exception:  # noqa: BLE001
-        return False
+        s = [int(x) for x in __import__("os").popen(
+            "grep 'cpu ' /proc/stat | head -1").read().split()[1:5]]
+        time.sleep(0.2)
+        s2 = [int(x) for x in __import__("os").popen(
+            "grep 'cpu ' /proc/stat | head -1").read().split()[1:5]]
+        d = [(a - b) for a, b in zip(s2, s)]
+        total = sum(d)
+        return 100.0 * (1.0 - d[3] / total) if total else 0.0
+    except Exception:
+        return 0.0
 
 
-def _local_ip() -> str:
-    """Best-effort primary IPv4 (UDP connect trick — no external traffic)."""
-    import socket
+def _temp() -> float:
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp") as fh:
+            return float(fh.read().strip()) / 1000.0
+    except Exception:
+        return 0.0
+
+
+def _hailo() -> bool:
+    return shutil.which("hailortcli") is not None
+
+
+def _lan_ip() -> str:
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("10.255.255.255", 1))
+        s.connect(("8.8.8.8", 80))
         ip = s.getsockname()[0]
         s.close()
         return ip
-    except Exception:  # noqa: BLE001
-        return "127.0.0.1"
+    except Exception:
+        return "n/a"
 
 
 class WhisplayDashboard:
-    """Background TFT status + button watcher with push-to-talk callback.
-
-    Usage::
-
-        dash = WhisplayDashboard(on_push_to_talk=callback)
-        dash.set_voice_state("listening")   # update text on next tick
-        dash.start()
-        ...
-        dash.stop()
-    """
+    """Background thread driving the Whisplay TFT + a PTT button."""
 
     def __init__(self, on_push_to_talk: Optional[Callable[[], None]] = None,
-                 button_gpio: int = _BUTTON_GPIO):
+                 poll: float = 2.0):
         self._on_ptt = on_push_to_talk
-        self._button_gpio = button_gpio
-        self._display: Optional[WhisplayDisplay] = None
-        self._chip: Optional[int] = None
-        self._voice_state = "starting"
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
+        self._poll = poll
+        self._voice_state = "IDLE"
+        self._running = False
         self._thread: Optional[threading.Thread] = None
-        self._button_pressed_at = 0.0
-
-        if _DISPLAY_AVAILABLE:
+        self._board = None
+        if _BOARD_AVAILABLE:
             try:
-                self._display = WhisplayDisplay()
+                self._board = WhisplayBoard()
+                # Backlight is active-LOW: 0 = on.
+                self._board.set_backlight(0)
+                self._board.set_rgb(0, 255, 0)
+                if self._on_ptt:
+                    self._board.on_button_press(self._ptt_pressed)
             except Exception as e:  # noqa: BLE001
-                log.warning("display init failed: %s", e)
-                self._display = None
+                log.warning("Whisplay board init failed: %s", e)
+                self._board = None
+        elif _BOARD_IMPORT_ERR:
+            log.debug("Whisplay board driver unavailable: %s", _BOARD_IMPORT_ERR)
 
-        if _LGPIO_AVAILABLE:
-            try:
-                self._chip = lgpio.gpiochip_open(0)
-                lgpio.gpio_claim_input(
-                    self._chip, self._button_gpio,
-                    lgpio.SET_PULL_UP,
-                )
-                log.info("button wired on GPIO%d", self._button_gpio)
-            except Exception as e:  # noqa: BLE001
-                log.warning("button init failed: %s", e)
-                self._chip = None
+    @property
+    def available(self) -> bool:
+        return self._board is not None
 
-    # ── public API ──────────────────────────────────────────────────────
-    def set_voice_state(self, state: str) -> None:
-        with self._lock:
-            self._voice_state = state
-
-    def start(self) -> None:
-        if self._thread and self._thread.is_alive():
+    def start(self):
+        if not self.available:
+            log.info("Whisplay dashboard unavailable — running headless")
             return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True,
+                                        name="whisplay-dash")
         self._thread.start()
-        log.info("Whisplay dashboard started")
+        self.render()
 
-    def stop(self) -> None:
-        self._stop.set()
-        if self._chip is not None:
-            try:
-                lgpio.gpiochip_close(self._chip)
-            except Exception:  # noqa: BLE001
-                pass
-            self._chip = None
+    def stop(self):
+        self._running = False
 
-    # ── internals ───────────────────────────────────────────────────────
-    def _run(self) -> None:
-        while not self._stop.is_set():
-            try:
-                self._tick_display()
-                self._tick_button()
-            except Exception as e:  # noqa: BLE001
-                log.debug("dashboard tick err: %s", e)
-            self._stop.wait(_UPDATE_INTERVAL_S)
+    def set_voice_state(self, label: str):
+        self._voice_state = label
+        self.render()
 
-    def _tick_display(self) -> None:
-        if self._display is None:
-            return
-        with self._lock:
-            voice = self._voice_state
-        cpu = psutil_cpu_percent()
-        mem = psutil_mem_percent()
-        tmp = psutil_temp()
-        ip = _local_ip()
-        hailo = "NPU OK" if _hailo_ok() else "NPU ERR"
-        title = voice.upper()
-        text = f"CPU {cpu:.0f}% RAM {mem:.0f}% {tmp:.0f}C {hailo} {ip}"
-        try:
-            self._display.update(text, title)
-        except Exception as e:  # noqa: BLE001
-            log.debug("display update err: %s", e)
-
-    def _tick_button(self) -> None:
-        if self._chip is None or self._on_ptt is None:
-            return
-        try:
-            level = lgpio.gpio_read(self._chip, self._button_gpio)
-        except Exception as e:  # noqa: BLE001
-            log.debug("button read err: %s", e)
-            return
-        now = time.time()
-        # Active-low: 0 = pressed. Debounce and require release before the
-        # next press so a single click fires once.
-        if level == 0 and (now - self._button_pressed_at) > _DEBOUNCE_S:
-            self._button_pressed_at = now
+    def _ptt_pressed(self):
+        if self._on_ptt:
             try:
                 self._on_ptt()
             except Exception as e:  # noqa: BLE001
-                log.warning("ptt callback err: %s", e)
+                log.warning("PTT callback error: %s", e)
 
+    def _loop(self):
+        while self._running:
+            try:
+                self.render()
+            except Exception as e:  # noqa: BLE001
+                log.warning("whisplay render error: %s", e)
+            time.sleep(self._poll)
 
-# ── tiny psutil-free helpers (the GUI's venv has psutil, but keep this
-#    module importable even in a minimal environment) ────────────────────
-def psutil_cpu_percent() -> float:
-    try:
-        import psutil
-        return psutil.cpu_percent(interval=None) or 0.0
-    except Exception:  # noqa: BLE001
+    def render(self):
+        if not self.available:
+            return
         try:
-            with open("/proc/stat", "r") as f:
-                line = f.readline().split()
-            total = sum(int(x) for x in line[1:])
-            idle = int(line[4])
-            return max(0.0, min(100.0, 100.0 * (1.0 - idle / max(total, 1))))
-        except Exception:  # noqa: BLE001
-            return 0.0
+            self._board.draw_image(0, 0, W, H, self._frame())
+        except Exception as e:  # noqa: BLE001
+            log.warning("whisplay paint failed: %s", e)
 
-
-def psutil_mem_percent() -> float:
-    try:
-        import psutil
-        return psutil.virtual_memory().percent
-    except Exception:  # noqa: BLE001
+    def _frame(self) -> bytes:
+        from PIL import Image, ImageDraw, ImageFont
+        img = Image.new("RGB", (W, H), _BG)
+        d = ImageDraw.Draw(img)
         try:
-            with open("/proc/meminfo", "r") as f:
-                lines = {k: int(v) for k, v in
-                         (ln.split(":") for ln in f if ":" in ln)}
-            total = lines.get("MemTotal", 0)
-            avail = lines.get("MemAvailable", total)
-            return 100.0 * (1.0 - avail / max(total, 1)) if total else 0.0
-        except Exception:  # noqa: BLE001
-            return 0.0
+            f1 = ImageFont.truetype(*_FONT)
+            f2 = ImageFont.truetype(*_FONT_BIG)
+        except Exception:
+            f1 = f2 = ImageFont.load_default()
+
+        d.text((10, 9), "REX", font=f2, fill=_FG)
+        state = self._voice_state
+        voice_colour = _OK if ("LISTEN" in state or "SPEAK" in state) else _DIM
+        d.text((10, 34), f"voice: {state}", font=f1, fill=voice_colour)
+        d.text((10, 56), f"cpu: {_cpu():5.0f}%   tmp: {_temp():4.0f}C",
+               font=f1, fill=_FG)
+        npn = "ok" if _hailo() else "off"
+        d.text((10, 78), f"hailo: {npn}", font=f1,
+               fill=_OK if _hailo() else _ERR)
+        d.text((10, 100), f"ip: {_lan_ip()}", font=f1, fill=_DIM)
+        d.text((10, 122), "<hold=PTT>", font=f1, fill=_DIM)
+
+        return _rgb565(img)
 
 
-def psutil_temp() -> float:
-    try:
-        import psutil
-        temps = psutil.sensors_temperatures()
-        for name in ("cpu_thermal", "cpu-thermal", "k10temp", "coretemp"):
-            if name in temps and temps[name]:
-                return temps[name][0].current
-        for entries in temps.values():
-            if entries:
-                return entries[0].current
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
-            return int(f.read().strip()) / 1000.0
-    except Exception:  # noqa: BLE001
-        return 0.0
+_dash_singleton: Optional[WhisplayDashboard] = None
+
+
+def get_dashboard(on_push_to_talk=None) -> WhisplayDashboard:
+    """Return a process-wide singleton WhisplayDashboard."""
+    global _dash_singleton
+    if _dash_singleton is None:
+        _dash_singleton = WhisplayDashboard(on_push_to_talk=on_push_to_talk)
+    return _dash_singleton

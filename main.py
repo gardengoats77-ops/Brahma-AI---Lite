@@ -1593,8 +1593,8 @@ def main():
     ui = REXUI(str(BASE_DIR / "assets" / "REX_Logo.png"), show_immediately=True)
 
     # Optional Pi Whisplay HAT: live status TFT + physical push-to-talk
-    # button. Absent display/GPIO/lgpio all degrade to no-ops, so this is
-    # safe everywhere.
+    # button (vendored PiSugar WhisplayBoard driver). Absent board/GPIO/
+    # deps all degrade to no-ops, so this is safe everywhere.
     dash = None
     try:
         from pi.whisplay_dashboard import WhisplayDashboard
