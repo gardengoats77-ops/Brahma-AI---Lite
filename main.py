@@ -1591,6 +1591,51 @@ def main():
     _startup_log("main entered")
     _ensure_desktop_shortcut()
     ui = REXUI(str(BASE_DIR / "assets" / "REX_Logo.png"), show_immediately=True)
+
+    # Optional Pi Whisplay HAT: live status TFT + physical push-to-talk
+    # button. Absent display/GPIO/lgpio all degrade to no-ops, so this is
+    # safe everywhere.
+    dash = None
+    try:
+        from pi.whisplay_dashboard import WhisplayDashboard
+
+        def _ptt_toggle():
+            # Physical button flips the mic mute — press to listen (push to
+            # talk), press again to mute (privacy).
+            try:
+                if getattr(ui, "muted", False):
+                    ui.set_muted_state(False)   # unmute = listen
+                else:
+                    ui.set_muted_state(True)    # mute = quiet
+            except Exception as _e:
+                log_error(_e, context="main.ptt", severity="warning")
+
+        dash = WhisplayDashboard(on_push_to_talk=_ptt_toggle)
+        dash.start()
+
+        # Mirror the HUD state to the small TFT (SPEAKING/LISTENING batches
+        # drive the matrix; every state update maps to a label).
+        _orig_set_state = ui.set_state
+
+        def _state_to_tft(state: str):
+            try:
+                label = "speaking" if state == "SPEAKING" else \
+                        ("listening" if state == "LISTENING" else
+                         state.lower())
+                dash.set_voice_state(label)
+            except Exception:
+                pass
+
+        def _wrapped_set_state(state: str):
+            _orig_set_state(state)
+            _state_to_tft(state)
+
+        ui.set_state = _wrapped_set_state
+        _startup_log("whisplay dashboard started")
+    except Exception as _e:
+        log_error(_e, context="main.whisplay", severity="debug")
+        dash = None
+
     dashboard = None
     dashboard_enabled = DashboardServer is not None and not _is_port_in_use(8000)
     if DashboardServer is not None and not dashboard_enabled:
