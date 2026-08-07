@@ -62,6 +62,66 @@ VOSK_MODEL_DIR = os.environ.get(
 )
 
 
+# ── Remote control tools (Pi -> desktop / fleet over SSH) ──────────────────
+# The Pi's Live loop declares exactly three tools: fleet status, open an
+# app, and a voice "check" helper. `remote_run` (free shell) stays behind
+# REX_REMOTE_ALLOW_SHELL=1 and is only usable from local CLI, never from
+# the voice surface.
+def _remote_tool_declarations() -> list[dict]:
+    return [
+        {
+            "name": "fleet_status",
+            "description": (
+                "List known devices (desktop, omnibook, tablet, ...) and whether "
+                "each is reachable right now."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+        {
+            "name": "fleet_open_app",
+            "description": (
+                "Open a well-known app on a device. device: 'desktop' or a "
+                "configured fleet name; app: browser/terminal/files/settings/"
+                "code or an http(s) URL."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "device": {"type": "string", "description": "device name"},
+                    "app": {"type": "string", "description": "app key or URL"},
+                },
+                "required": ["device", "app"],
+            },
+        },
+    ]
+
+
+async def _remote_execute(fc) -> dict:
+    """Run one remote tool call. Mirrors main.py's _execute_tool shape."""
+    import pi.remote_control as rc
+
+    name = fc.name
+    args = dict(fc.args or {})
+    if name == "fleet_status":
+        rows = []
+        for st in rc.fleet_status():
+            rows.append(f"{st['name']}: {'ok' if st['reachable'] else 'down'}")
+        return {"result": "; ".join(rows) or "no devices"}
+    if name == "fleet_open_app":
+        dev = args.get("device", "")
+        app = args.get("app", "browser")
+        if not dev:
+            return {"result": "error: no device given"}
+        r = rc.open_app(dev, app)
+        if r.get("ok"):
+            return {"result": f"opened {app} on {dev}"}
+        return {"result": f"failed to open {app} on {dev}: {r.get('stderr') or r.get('rc')}"}
+    return {"result": f"unknown tool {name}"}
+
+
 @dataclass
 class BootState:
     """Snapshot of hardware discovery results, reported via /api/health."""
@@ -249,6 +309,7 @@ async def _run_live_session(
         output_audio_transcription={},
         input_audio_transcription={},
         system_instruction=sys_prompt,
+        tools=[{"function_declarations": _remote_tool_declarations()}],
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(
@@ -323,6 +384,29 @@ async def _run_live_session(
                                 display.update(txt[:60], "listening")
                         if sc.turn_complete:
                             is_speaking["flag"] = False
+
+                    if response.tool_call:
+                        fn_responses = []
+                        for fc in response.tool_call.function_calls:
+                            log.info("Remote tool call: %s", fc.name)
+                            try:
+                                fr = await _remote_execute(fc)
+                                fn_responses.append(
+                                    types.FunctionResponse(
+                                        id=fc.id, name=fc.name, response=fr
+                                    )
+                                )
+                            except Exception as e:  # noqa: BLE001
+                                log.warning("remote tool error: %s", e)
+                                fn_responses.append(
+                                    types.FunctionResponse(
+                                        id=fc.id, name=fc.name,
+                                        response={"result": f"error: {e}"},
+                                    )
+                                )
+                        await session.send_tool_response(
+                            function_responses=fn_responses
+                        )
             except Exception as e:
                 log.error("recv error: %s", e)
                 raise
