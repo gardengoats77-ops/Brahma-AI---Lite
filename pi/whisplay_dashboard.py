@@ -62,6 +62,13 @@ _FONT_BIG = ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", 36)
 # HAT's physical mounting (native panel is 240x280 portrait).
 _ROTATE_DEG = 90
 
+# Desktop REX brain endpoint (Tailscale peer "desktop"). Probed with a short
+# TCP connect so the HAT shows a live "link: ok/down" row syncing with the
+# desktop machine.
+_DESKTOP_HOST = os.environ.get("REX_DESKTOP_HOST", "100.97.24.91")
+_DESKTOP_PORT = int(os.environ.get("REX_DESKTOP_PORT", "8788"))
+_link_cache: dict = {"t": 0.0, "ok": None}  # (monotonic, bool|None)
+
 
 # ─── Daemon socket client (inline, no GPIO ownership) ────────────────────────
 class _DaemonClient:
@@ -224,6 +231,25 @@ def _lan_ip() -> str:
         return "n/a"
 
 
+def _desktop_link() -> bool:
+    """True when the desktop REX brain accepts a TCP connect.
+
+    Cached 5 s so the 2 s render loop doesn't hammer the desktop.
+    """
+    now = time.monotonic()
+    if _link_cache["ok"] is not None and (now - _link_cache["t"]) < 5.0:
+        return _link_cache["ok"]
+    ok = False
+    try:
+        s = socket.create_connection((_DESKTOP_HOST, _DESKTOP_PORT), timeout=1.5)
+        s.close()
+        ok = True
+    except Exception:
+        ok = False
+    _link_cache.update(t=now, ok=ok)
+    return ok
+
+
 class WhisplayDashboard:
     """Background thread driving the Whisplay TFT + PTT through the daemon."""
 
@@ -232,6 +258,7 @@ class WhisplayDashboard:
         self._on_ptt = on_push_to_talk
         self._poll = poll
         self._voice_state = "IDLE"
+        self._muted = False
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._mode: Optional[str] = None  # "daemon" | "direct" | None
@@ -286,7 +313,33 @@ class WhisplayDashboard:
 
     def set_voice_state(self, label: str):
         self._voice_state = label
+        self._sync_led()
         self.render()
+
+    def set_muted(self, muted: bool):
+        """Reflect mute state on the LED (privacy = red)."""
+        self._muted = bool(muted)
+        self._sync_led()
+
+    def _sync_led(self):
+        """Push a state-colored RGB LED through whichever path is active."""
+        if self._muted:
+            r, g, b = 255, 30, 30        # red = muted / privacy
+        elif self._voice_state in ("LISTENING", "listening"):
+            r, g, b = 0, 255, 80         # green = listening
+        elif self._voice_state in ("SPEAKING", "speaking"):
+            r, g, b = 0, 160, 255        # cyan = speaking
+        elif self._voice_state in ("THINKING", "thinking"):
+            r, g, b = 255, 170, 0        # amber = thinking
+        else:
+            r, g, b = 30, 60, 90         # dim blue = idle
+        try:
+            if self._mode == "daemon" and self._client is not None:
+                self._client.led(r, g, b)
+            elif self._mode == "direct" and self._board is not None:
+                self._board.set_rgb(r, g, b)
+        except Exception as e:  # noqa: BLE001
+            log.debug("whisplay LED sync failed: %s", e)
 
     def _ptt_pressed(self):
         if self._on_ptt:
@@ -354,7 +407,10 @@ class WhisplayDashboard:
         d.text((12, 140), f"hailo: {npx}", font=f1,
                fill=_OK if _hailo() else _ERR)
         d.text((12, 172), f"ip: {_lan_ip()}", font=f1, fill=_DIM)
-        d.text((12, 204), "<hold PTT>", font=f1, fill=_DIM)
+        if _desktop_link():
+            d.text((12, 204), "link: ok", font=f1, fill=_OK)
+        else:
+            d.text((12, 204), "link: down", font=f1, fill=_ERR)
 
         # Rotate so the content matches the physical HAT orientation.
         img = img.rotate(-_ROTATE_DEG, expand=True)

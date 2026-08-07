@@ -1607,6 +1607,8 @@ def main():
                     ui.set_muted_state(False)   # unmute = listen
                 else:
                     ui.set_muted_state(True)    # mute = quiet
+                if dash is not None:
+                    dash.set_muted(getattr(ui, "muted", False))
             except Exception as _e:
                 log_error(_e, context="main.ptt", severity="warning")
 

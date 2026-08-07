@@ -55,3 +55,34 @@ def test_frame_fits_portrait_framebuffer(monkeypatch):
     data = dash._frame()
     assert isinstance(data, bytes)
     assert len(data) == 240 * 280 * 2
+
+
+def test_link_probe_unreachable(monkeypatch):
+    """_desktop_link() returns False (no raise) when desktop is unreachable."""
+    monkeypatch.setattr(_MODULE, "_DESKTOP_HOST", "192.0.2.1")  # TEST-NET
+    monkeypatch.setattr(_MODULE, "_DESKTOP_PORT", 9)
+    monkeypatch.setattr(_MODULE, "_link_cache", {"t": 0.0, "ok": None})
+    assert _MODULE._desktop_link() is False
+
+
+def test_led_sync_daemon(monkeypatch):
+    """Voice state and mute push the right LED colors over the client."""
+    _set_defaults(monkeypatch)
+    dash = _WhisplayDashboard(on_push_to_talk=lambda: None)
+    dash._mode = "daemon"
+    calls = []
+
+    class FakeClient:
+        def led(self, r, g, b):
+            calls.append((r, g, b))
+
+        def button_pressed(self):
+            return False
+
+    dash._client = FakeClient()
+    dash.set_voice_state("LISTENING")
+    assert calls[-1] == (0, 255, 80)
+    dash.set_voice_state("SPEAKING")
+    assert calls[-1] == (0, 160, 255)
+    dash.set_muted(True)
+    assert calls[-1] == (255, 30, 30)
