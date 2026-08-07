@@ -1,0 +1,21 @@
+[Unit]
+Description=REX desktop GUI — Brahma AI voice + HUD (Pi 5 + Whisplay)
+After=network-online.target sound.target graphical-session.target
+Wants=network-online.target sound.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Brahma-AI---Lite
+Environment=BRAHMA_PI_HEADLESS=1
+Environment=BRAHMA_HEF_PATH=/usr/share/hailo-models/yolov11m_h10.hef
+Environment=DISPLAY=:0
+Environment=HOME=%h
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/star-ai/.venv/bin/python %h/Brahma-AI---Lite/main.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

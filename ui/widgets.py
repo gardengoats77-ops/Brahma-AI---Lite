@@ -72,6 +72,7 @@ class BackgroundWidget(QWidget):
         self.setAutoFillBackground(False)
         self._image_path = Path(image_path) if image_path else None
         self._background_pixmap = None
+        self._scaled_cache: tuple[QSize, QPixmap] | None = None
         self._load_background()
 
     def _load_background(self) -> None:
@@ -84,19 +85,36 @@ class BackgroundWidget(QWidget):
         except Exception:
             self._background_pixmap = None
 
+    def resizeEvent(self, event):
+        # Cache is tied to widget size — invalidate on resize.
+        self._scaled_cache = None
+        super().resizeEvent(event)
+
     def paintEvent(self, event):
         if not self._background_pixmap:
             super().paintEvent(event)
             return
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         rect = self.rect()
-        pix = self._background_pixmap.scaled(
-            rect.size(),
-            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-            Qt.TransformationMode.SmoothTransformation)
+        # Reuse the cached scaled pixmap when the size hasn't changed. The
+        # full-image smooth rescale is the single most expensive draw op on
+        # software-rendered (GPU-less) X11 — doing it once per resize instead
+        # of once per repaint cuts the main-thread CPU dramatically when the
+        # background is repainted continuously.
+        pix = None
+        if self._scaled_cache is not None and self._scaled_cache[0] == rect.size():
+            pix = self._scaled_cache[1]
+        if pix is None or pix.isNull():
+            # Cache miss (first paint / resize).
+            self._scaled_cache = None
+            pix = self._background_pixmap.scaled(
+                rect.size(),
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation)
+            self._scaled_cache = (QSize(rect.size()), pix)
         x = (rect.width() - pix.width()) // 2
         y = (rect.height() - pix.height()) // 2
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         painter.drawPixmap(x, y, pix)
         painter.fillRect(rect, QColor(2, 3, 5, 28))
         painter.end()
@@ -378,6 +396,22 @@ class _SysMetrics:
             self.tmp = tmp
 
     def _get_gpu(self) -> float:
+        # One-time GPU-tool availability probe. On systems without a GPU
+        # utility (e.g. the GPU-less Pi 5 which exposes only the Hailo NPU)
+        # every metrics tick used to spawn up to 4 failing subprocesses and
+        # log a full traceback each — the single largest CPU + log cost in
+        # the loop. Detect once, cache the negative, and bail early.
+        if getattr(self, "_gpu_probe_done", False) and not self._gpu_probe_present:
+            return -1.0
+        if not getattr(self, "_gpu_probe_done", False):
+            import shutil as _shutil
+            self._gpu_probe_present = any(
+                _shutil.which(tok)
+                for tok in ("nvidia-smi", "rocm-smi", "intel_gpu_top", "powermetrics", "osx-cpu-temp")
+            )
+            self._gpu_probe_done = True
+            if not self._gpu_probe_present:
+                return -1.0
         # NVIDIA
         try:
             r = _quiet_run(
