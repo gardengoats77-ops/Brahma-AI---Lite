@@ -96,6 +96,22 @@ def _remote_tool_declarations() -> list[dict]:
                 "required": ["device", "app"],
             },
         },
+        {
+            "name": "brain_dispatch",
+            "description": (
+                "Dispatch a natural-language command to the desktop's REX-OMEGA "
+                "brain — a 45-agent orchestrator that can research, code, send "
+                "files, control apps, etc. Use this for anything that needs "
+                "semantic understanding or multi-step work on the desktop."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "what the brain should do"},
+                },
+                "required": ["prompt"],
+            },
+        },
     ]
 
 
@@ -119,6 +135,16 @@ async def _remote_execute(fc) -> dict:
         if r.get("ok"):
             return {"result": f"opened {app} on {dev}"}
         return {"result": f"failed to open {app} on {dev}: {r.get('stderr') or r.get('rc')}"}
+    if name == "brain_dispatch":
+        prompt = args.get("prompt", "")
+        if not prompt:
+            return {"result": "error: no prompt given"}
+        r = rc.dispatch(prompt)
+        if r.get("ok"):
+            agent = r.get("assigned_agent", "?")
+            task = r.get("task_id", "?")
+            return {"result": f"dispatched to {agent} (task {task})"}
+        return {"result": f"dispatch failed: {r.get('error', 'unknown')}"}
     return {"result": f"unknown tool {name}"}
 
 

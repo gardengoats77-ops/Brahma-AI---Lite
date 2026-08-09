@@ -244,11 +244,119 @@ def _demo() -> List[str]:
     return rows
 
 
+# ── Brain dispatch bridge ────────────────────────────────────────────────────
+# The desktop's REX-OMEGA brain (port 8788) is a 45-agent orchestrator with a
+# POST /api/dispatch endpoint. It's token-gated; the token lives in the running
+# process's env (GWUAP_REX_WEB_TOKEN) or the file ~/REX-OMEGA/config/web_token.txt.
+# We read it over SSH at runtime — never stored in this repo, never logged.
+
+_BRAIN_HOST = os.environ.get("REX_DESKTOP_HOST", "100.97.24.91")
+_BRAIN_PORT = int(os.environ.get("REX_DESKTOP_PORT", "8788"))
+_BRAIN_TOKEN_CACHE: Optional[str] = None
+_BRAIN_TOKEN_TTL = 300  # 5 min cache — token rarely rotates
+_BRAIN_TOKEN_TS = 0.0
+
+
+def _brain_token() -> str:
+    """Fetch the brain API token over SSH from the desktop's running process."""
+    global _BRAIN_TOKEN_CACHE, _BRAIN_TOKEN_TS
+    if _BRAIN_TOKEN_CACHE and (time.monotonic() - _BRAIN_TOKEN_TS) < _BRAIN_TOKEN_TTL:
+        return _BRAIN_TOKEN_CACHE
+
+    # Try the env of the running brain process first (most reliable), then
+    # fall back to the file.
+    ssh_cmd = (
+        "ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new "
+        "desktop \""
+        "BPID=$(pgrep -f 'uvicorn.*8788' | head -1);"
+        "if [ -n \\\"$BPID\\\" ]; then "
+        "  cat /proc/$BPID/environ 2>/dev/null | tr '\\\\0' '\\\\n' | grep '^GWUAP_REX_WEB_TOKEN=' | cut -d= -f2-;"
+        "fi; "
+        "cat ~/REX-OMEGA/config/web_token.txt 2>/dev/null"
+        "\""
+    )
+    try:
+        r = subprocess.run(ssh_cmd, shell=True, capture_output=True, text=True, timeout=8)
+        lines = [l.strip() for l in (r.stdout or "").splitlines() if l.strip()]
+        if lines:
+            _BRAIN_TOKEN_CACHE = lines[0]  # env token takes priority (first line)
+            _BRAIN_TOKEN_TS = time.monotonic()
+            return _BRAIN_TOKEN_CACHE
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+def _brain_url(path: str) -> str:
+    return f"http://{_BRAIN_HOST}:{_BRAIN_PORT}{path}"
+
+
+def dispatch(prompt: str, timeout: float = 30.0) -> Dict[str, Any]:
+    """Send a natural-language dispatch to the brain's agent orchestrator.
+
+    Returns the dispatch response (task_id, assigned_agent, status) or
+    an error dict. The prompt goes to the 45-agent router which picks the
+    right specialist and runs it.
+    """
+    import urllib.request
+    import urllib.error
+
+    token = _brain_token()
+    if not token:
+        return {"ok": False, "error": "could not fetch brain token over SSH"}
+
+    body = json.dumps({"prompt": prompt}).encode()
+    req = urllib.request.Request(
+        _brain_url("/api/dispatch"),
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            return {"ok": True, **data}
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "error": f"HTTP {e.code}", "detail": e.read().decode()[:500]}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
+
+
+def list_agents(timeout: float = 10.0) -> Dict[str, Any]:
+    """List the brain's available agents (45-agent fleet)."""
+    import urllib.request
+    import urllib.error
+
+    token = _brain_token()
+    if not token:
+        return {"ok": False, "error": "could not fetch brain token over SSH"}
+
+    req = urllib.request.Request(
+        _brain_url("/api/agents"),
+        headers={"Authorization": f"Bearer {token}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return {"ok": True, "agents": json.loads(resp.read().decode())}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
+
+
 if __name__ == "__main__":
     import sys
     args = sys.argv[1:]
     if args and args[0] == "status":
         print("\n".join(_demo()) or "(no devices catalogued)")
+        raise SystemExit(0)
+    if args and args[0] == "dispatch":
+        print(dispatch(" ".join(args[1:])))
+        raise SystemExit(0)
+    if args and args[0] == "agents":
+        print(list_agents())
         raise SystemExit(0)
     if len(args) >= 2 and args[0] == "open":
         print(open_app(args[1], args[2] if len(args) > 2 else "browser"))
@@ -256,4 +364,4 @@ if __name__ == "__main__":
     if len(args) >= 2 and args[0] == "run":
         print(run(args[1], " ".join(args[2:])))
         raise SystemExit(0)
-    print("usage: remote_control.py status|open <dev> [app]|run <dev> <cmd>")
+    print("usage: remote_control.py status|dispatch <msg>|agents|open <dev> [app]|run <dev> <cmd>")
