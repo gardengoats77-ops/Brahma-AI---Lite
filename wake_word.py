@@ -85,14 +85,95 @@ class WakeWordListener:
 
             if not self._model_dir.is_dir():
                 log.warning("wake_word: model dir missing: %s", self._model_dir)
-                return
-            self._model = Model(str(self._model_dir))
+                self._recover_model_from_zip()
+                if not self._model_dir.is_dir():
+                    log.warning("wake_word: no usable model after recovery attempt")
+                    return
+            try:
+                self._model = Model(str(self._model_dir))
+            except Exception as exc:
+                log.warning("wake_word: model load failed (%s) — attempting zip recovery", exc)
+                if not self._recover_model_from_zip():
+                    raise
+                self._model = Model(str(self._model_dir))
             self._make_recognizer()
             self._available = True
             log.info("wake_word: model loaded from %s", self._model_dir)
         except Exception as exc:
             log.warning("wake_word: unavailable (%s)", exc)
             self._available = False
+
+    def _recover_model_from_zip(self) -> bool:
+        """Self-heal a corrupt/missing Vosk model from its sibling <name>.zip.
+
+        Extracts to a temp sibling dir, verifies the fresh copy loads, then
+        atomically swaps it into place. Returns True only when the swap
+        succeeded and the new dir passes vosk.Model(). No-op (False) when
+        no zip exists or the zip is itself broken — the caller degrades.
+        """
+        import shutil
+        import tempfile
+        import zipfile
+
+        # The zip may sit beside the model as <dir>.zip, or under a generic
+        # name (e.g. vosk-model.zip) in the same parent.
+        zip_path: Path | None = None
+        direct = Path(str(self._model_dir) + ".zip")
+        if direct.is_file():
+            zip_path = direct
+        else:
+            generic = self._model_dir.parent / "vosk-model.zip"
+            if generic.is_file():
+                zip_path = generic
+        if zip_path is None:
+            return False
+        try:
+            parent = self._model_dir.parent
+            tmp_dir = Path(tempfile.mkdtemp(prefix="vosk-model-", dir=str(parent)))
+            try:
+                log.info("wake_word: extracting %s", zip_path)
+                with zipfile.ZipFile(zip_path) as zf:
+                    # Guard against zip-slip: only extract entries that stay
+                    # inside the temp dir.
+                    for member in zf.namelist():
+                        target = (tmp_dir / member).resolve()
+                        if not str(target).startswith(str(tmp_dir.resolve())):
+                            raise RuntimeError(f"unsafe zip member: {member}")
+                    zf.extractall(tmp_dir)
+
+                # The zip normally contains the model as its own top-level
+                # folder (e.g. vosk-model-small-en-us-0.15/) — pick it up.
+                candidate = tmp_dir
+                children = [p for p in tmp_dir.iterdir()]
+                if len(children) == 1 and children[0].is_dir():
+                    candidate = children[0]
+
+                from vosk import Model  # verify before swapping
+                Model(str(candidate))
+            except Exception as exc:
+                log.warning("wake_word: zip recovery failed validation: %s", exc)
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                return False
+
+            # Swap: move broken dir aside, promote the fresh extraction.
+            broken = self._model_dir.with_name(self._model_dir.name + ".bad")
+            shutil.rmtree(broken, ignore_errors=True)
+            try:
+                if self._model_dir.exists():
+                    self._model_dir.rename(broken)
+                candidate.rename(self._model_dir)
+            except Exception:
+                # Promote failed — put the original back if it still exists.
+                if broken.is_dir() and not self._model_dir.exists():
+                    broken.rename(self._model_dir)
+                raise
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            shutil.rmtree(broken, ignore_errors=True)
+            log.info("wake_word: recovered model from %s", zip_path)
+            return True
+        except Exception as exc:
+            log.warning("wake_word: zip recovery failed: %s", exc)
+            return False
 
     def _make_recognizer(self):
         from vosk import KaldiRecognizer
