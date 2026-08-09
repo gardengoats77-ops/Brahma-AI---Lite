@@ -77,8 +77,10 @@ class _DaemonClient:
     LCD_WIDTH = W
     LCD_HEIGHT = H
 
-    def __init__(self, socket_path: str = _SOCKET_PATH, app_id: str = "rex-gui"):
-        self.socket_path = socket_path
+    def __init__(self, socket_path: Optional[str] = None, app_id: str = "rex-gui"):
+        # Resolve the default at call time (not class-definition time) so
+        # tests can monkeypatch _SOCKET_PATH and get a real override.
+        self.socket_path = socket_path if socket_path is not None else _SOCKET_PATH
         self.app_id = app_id
         self._mmap: Optional[mmap.mmap] = None
         self._fb = None

@@ -47,6 +47,12 @@ on_non_windows = pytest.mark.skipif(
 
 def _require_linux_shim():
     """Import the shim (it self-installs stubs on import) and return it."""
+    # Some app modules (ui/styles, ui/widgets, main) want a display.  When
+    # running over SSH there is no DISPLAY env var even though an X server
+    # exists on :0 — detect it from the X11 socket so the suite passes on
+    # the headless-VPN Pi as well as the desktop box.
+    if "DISPLAY" not in os.environ and os.path.exists("/tmp/.X11-unix/X0"):
+        os.environ["DISPLAY"] = ":0"
     import linux_shim  # noqa: F401
     return sys.modules["linux_shim"]
 
