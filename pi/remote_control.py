@@ -264,22 +264,31 @@ def _brain_token() -> str:
         return _BRAIN_TOKEN_CACHE
 
     # Try the env of the running brain process first (most reliable), then
-    # fall back to the file.
+    # fall back to the file. The env token is short (rex_omega_...), the file
+    # token is a 64-char hex string. We prefer the first line that is NOT
+    # 64 hex chars.
     ssh_cmd = (
         "ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new "
-        "desktop \""
-        "BPID=$(pgrep -f 'uvicorn.*8788' | head -1);"
-        "if [ -n \\\"$BPID\\\" ]; then "
-        "  cat /proc/$BPID/environ 2>/dev/null | tr '\\\\0' '\\\\n' | grep '^GWUAP_REX_WEB_TOKEN=' | cut -d= -f2-;"
-        "fi; "
+        "desktop '"
+        "BPID=$(pgrep -f uvicorn.*8788 | head -1);"
+        "if [ -n \"$BPID\" ]; then "
+        "  cat /proc/$BPID/environ 2>/dev/null | tr \"\\0\" \"\\n\" | grep \"^GWUAP_REX_WEB_TOKEN=\" | cut -d= -f2-;"
+        "fi;"
         "cat ~/REX-OMEGA/config/web_token.txt 2>/dev/null"
-        "\""
+        "'"
     )
     try:
         r = subprocess.run(ssh_cmd, shell=True, capture_output=True, text=True, timeout=8)
         lines = [l.strip() for l in (r.stdout or "").splitlines() if l.strip()]
         if lines:
-            _BRAIN_TOKEN_CACHE = lines[0]  # env token takes priority (first line)
+            # Prefer the env token (short, non-hex) over the file token (64 hex)
+            for tok in lines:
+                if len(tok) != 64 or not all(c in "0123456789abcdef" for c in tok.lower()):
+                    _BRAIN_TOKEN_CACHE = tok
+                    _BRAIN_TOKEN_TS = time.monotonic()
+                    return _BRAIN_TOKEN_CACHE
+            # Fallback: just use the first line
+            _BRAIN_TOKEN_CACHE = lines[0]
             _BRAIN_TOKEN_TS = time.monotonic()
             return _BRAIN_TOKEN_CACHE
     except Exception:  # noqa: BLE001
