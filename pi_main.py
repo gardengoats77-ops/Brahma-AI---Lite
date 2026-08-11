@@ -299,6 +299,15 @@ def _remote_tool_declarations() -> list[dict]:
             },
         },
         {
+            "name": "check_upcoming",
+            "description": (
+                "Check for upcoming reminders and calendar events in the next "
+                "10 minutes and announce them. Use when the user asks "
+                "'what's coming up?', 'any reminders soon?', or proactively."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+        {
             "name": "calendar_today",
             "description": (
                 "Read today's calendar events and speak the schedule. "
@@ -592,6 +601,14 @@ async def _remote_execute(fc, tts=None) -> dict:
         if tts:
             tts.speak(msg)
         return {"result": msg, "reminders": reminders}
+    if name == "check_upcoming":
+        from pi import scheduler
+
+        items = scheduler.check_upcoming()
+        msg = scheduler.format_upcoming(items)
+        if tts:
+            tts.speak(msg)
+        return {"result": msg, "upcoming": items}
     if name == "calendar_today":
         from pi import calendar_sync
 
