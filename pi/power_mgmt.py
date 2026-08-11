@@ -130,6 +130,8 @@ def _pmic_available() -> bool:
 
 def _create_pmic() -> Optional[PMICInterface]:
     """Factory: create a PMIC instance, return None if unavailable."""
+    if not _pmic_available():
+        return None
     try:
         pmic = PiSugarPMIC()
         if pmic.available:
