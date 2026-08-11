@@ -55,6 +55,9 @@ class WakeWordListener:
         available:  True when vosk + a usable model directory were found.
     """
 
+    # Voice-command presets ("Hey Rex, set wake sensitivity to high/low/medium").
+    SENSITIVITY_PRESETS: "dict[str, float]" = {"high": 0.8, "medium": 0.5, "low": 0.2}
+
     def __init__(
         self,
         model_dir: str | Path,

@@ -196,3 +196,25 @@ def test_set_enabled_reentrant_safe():
     w.set_enabled(True)  # no-op, must not spawn a second thread
     assert w._thread is not None
     w.set_enabled(False)
+
+
+# ── voice-controlled sensitivity presets ────────────────────────────────
+
+def test_sensitivity_voice_control():
+    """Voice commands 'high'/'medium'/'low' map to preset sensitivity values."""
+    w = _mk_listener()
+    # Preset mapping exists and has the expected keys/values
+    presets = WakeWordListener.SENSITIVITY_PRESETS
+    assert presets == {"high": 0.8, "medium": 0.5, "low": 0.2}
+    # Each preset can be applied via set_sensitivity
+    for name, expected in presets.items():
+        w.set_sensitivity(expected)
+        assert w._sensitivity == expected
+    # Raw float still works
+    w.set_sensitivity(0.33)
+    assert w._sensitivity == 0.33
+    # Out-of-range raw floats clamp
+    w.set_sensitivity(2.0)
+    assert w._sensitivity == 1.0
+    w.set_sensitivity(-1.0)
+    assert w._sensitivity == 0.0

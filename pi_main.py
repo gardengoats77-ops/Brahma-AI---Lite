@@ -30,7 +30,7 @@ import threading
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 # Keep Windows-only imports stubbed on non-Windows platforms.
 import linux_shim  # noqa: F401
@@ -40,6 +40,9 @@ from pi.whisplay_audio import WhisplayAudio, discover_whisplay_devices
 from pi.whisplay_display import WhisplayDisplay
 from pi.whisplay_dashboard import get_dashboard
 from pi.hailo_engine import HailoEngine
+
+if TYPE_CHECKING:
+    from wake_word import WakeWordListener
 
 log = logging.getLogger("brahma.pi")
 
@@ -68,6 +71,12 @@ VOSK_MODEL_DIR = os.environ.get(
 # app, and a voice "check" helper. `remote_run` (free shell) stays behind
 # REX_REMOTE_ALLOW_SHELL=1 and is only usable from local CLI, never from
 # the voice surface.
+#
+# _wakeword_ref is populated by _voice_loop() after the Vosk listener boots,
+# so _remote_execute can adjust sensitivity live without reopening audio.
+_wakeword_ref: "dict[str, WakeWordListener | None]" = {"listener": None}
+
+
 def _remote_tool_declarations() -> list[dict]:
     return [
         {
@@ -113,11 +122,35 @@ def _remote_tool_declarations() -> list[dict]:
                 "required": ["prompt"],
             },
         },
+        {
+            "name": "set_wake_sensitivity",
+            "description": (
+                "Adjust the Hey Rex wake-word sensitivity live. "
+                "Use a preset ('high', 'medium', 'low') or a raw float 0.0–1.0."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "value": {
+                        "anyOf": [
+                            {"type": "string", "enum": ["high", "medium", "low"]},
+                            {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        ],
+                        "description": "sensitivity preset or raw float",
+                    },
+                },
+                "required": ["value"],
+            },
+        },
     ]
 
 
-async def _remote_execute(fc) -> dict:
-    """Run one remote tool call. Mirrors main.py's _execute_tool shape."""
+async def _remote_execute(fc, tts=None) -> dict:
+    """Run one remote tool call. Mirrors main.py's _execute_tool shape.
+
+    If ``tts`` is provided, a brief voice confirmation is spoken after
+    brain_dispatch or fleet_open_app completes.
+    """
     import pi.remote_control as rc
 
     name = fc.name
@@ -134,7 +167,10 @@ async def _remote_execute(fc) -> dict:
             return {"result": "error: no device given"}
         r = rc.open_app(dev, app)
         if r.get("ok"):
-            return {"result": f"opened {app} on {dev}"}
+            msg = f"opened {app} on {dev}"
+            if tts:
+                tts.speak(msg)
+            return {"result": msg}
         return {"result": f"failed to open {app} on {dev}: {r.get('stderr') or r.get('rc')}"}
     if name == "brain_dispatch":
         prompt = args.get("prompt", "")
@@ -144,8 +180,32 @@ async def _remote_execute(fc) -> dict:
         if r.get("ok"):
             agent = r.get("assigned_agent", "?")
             task = r.get("task_id", "?")
-            return {"result": f"dispatched to {agent} (task {task})"}
+            msg = f"dispatched to {agent} (task {task})"
+            if tts:
+                tts.speak(msg)
+            return {"result": msg}
         return {"result": f"dispatch failed: {r.get('error', 'unknown')}"}
+    if name == "set_wake_sensitivity":
+        from wake_word import WakeWordListener
+
+        raw = args.get("value")
+        if raw is None:
+            return {"result": "error: no value given"}
+        listener = _wakeword_ref.get("listener")
+        if listener is None or not listener.available:
+            return {"result": "error: wake-word listener not available"}
+        presets = WakeWordListener.SENSITIVITY_PRESETS
+        if isinstance(raw, str):
+            if raw not in presets:
+                return {"result": f"error: unknown preset '{raw}'; use high/medium/low"}
+            value = presets[raw]
+        else:
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                return {"result": f"error: invalid numeric value {raw!r}"}
+        listener.set_sensitivity(value)
+        return {"result": f"wake sensitivity set to {value:.2f} ({listener._exp():d})"}
     return {"result": f"unknown tool {name}"}
 
 
@@ -271,6 +331,7 @@ async def _voice_loop(
             sensitivity=0.5,
         )
         wakeword.set_enabled(True)
+        _wakeword_ref["listener"] = wakeword
         log.info("Vosk wake-word listener armed: %s", wakeword.available)
         display.update("Hey Rex", "listen")
     except Exception as e:
