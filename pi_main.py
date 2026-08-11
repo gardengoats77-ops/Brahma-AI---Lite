@@ -223,6 +223,66 @@ def _remote_tool_declarations() -> list[dict]:
                 "required": ["entity_id"],
             },
         },
+        {
+            "name": "schedule_reminder",
+            "description": (
+                "Schedule a voice reminder to fire after a delay. "
+                "message: what to remind about (e.g., 'check the build'). "
+                "minutes: how long to wait before reminding. "
+                "Use when the user says things like 'remind me in 20 minutes to...'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "what to remind about",
+                    },
+                    "minutes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1440,
+                        "description": "minutes to wait before reminding (1-1440)",
+                    },
+                },
+                "required": ["message", "minutes"],
+            },
+        },
+        {
+            "name": "cancel_reminder",
+            "description": (
+                "Cancel a previously scheduled reminder by its task_id. "
+                "Use when the user says 'cancel my reminder' or 'cancel reminder abc123'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "the task_id of the reminder to cancel",
+                    },
+                },
+                "required": ["task_id"],
+            },
+        },
+        {
+            "name": "list_reminders",
+            "description": (
+                "List all scheduled reminders, or filter by status. "
+                "status: optional filter — 'scheduled', 'fired', or 'cancelled'. "
+                "Use when the user asks 'what reminders do I have?' or 'show my reminders'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["scheduled", "fired", "cancelled"],
+                        "description": "optional status filter",
+                    },
+                },
+            },
+        },
     ]
 
 
@@ -372,6 +432,43 @@ async def _remote_execute(fc, tts=None) -> dict:
         if tts:
             tts.speak(reply)
         return {"result": reply, "state": state}
+    if name == "schedule_reminder":
+        from pi import scheduler
+
+        message = args.get("message", "")
+        minutes = args.get("minutes", 0)
+        if not message or not minutes:
+            return {"result": "error: message and minutes are required"}
+        reminder = scheduler.schedule_reminder(message, minutes)
+        msg = f"Reminder set: '{message}' in {minutes} minutes"
+        if tts:
+            tts.speak(msg)
+        return {"result": msg, "reminder": reminder}
+    if name == "cancel_reminder":
+        from pi import scheduler
+
+        task_id = args.get("task_id", "")
+        if not task_id:
+            return {"result": "error: task_id is required"}
+        result = scheduler.cancel_reminder(task_id)
+        if result is None:
+            return {"result": f"no reminder found with task_id {task_id}"}
+        msg = f"Reminder cancelled: '{result.get('message', '')}'"
+        if tts:
+            tts.speak(msg)
+        return {"result": msg, "reminder": result}
+    if name == "list_reminders":
+        from pi import scheduler
+
+        status_filter = args.get("status")
+        reminders = scheduler.list_reminders(status_filter=status_filter)
+        if not reminders:
+            return {"result": "no reminders found"}
+        count = len(reminders)
+        msg = f"You have {count} reminder{'s' if count != 1 else ''}"
+        if tts:
+            tts.speak(msg)
+        return {"result": msg, "reminders": reminders}
     return {"result": f"unknown tool {name}"}
 
 
