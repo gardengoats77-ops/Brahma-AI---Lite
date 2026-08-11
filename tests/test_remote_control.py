@@ -203,3 +203,105 @@ def test_ssh_key_rollout_with_alias(tmp_path, monkeypatch):
     reg = json.loads(rsk.DEVICES_FILE.read_text())
     names = {d["name"] for d in reg}
     assert "desktop" in names
+
+
+# ─── Tailscale SSH fallback transport ───────────────────────────────────────
+
+def test_tailscale_ssh_fallback(tmp_path, monkeypatch):
+    """When standard SSH fails with auth error, _ssh_cmd should fall back to
+    `tailscale ssh user@host command` automatically."""
+    _fake_devices(tmp_path, monkeypatch)
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        # First call (standard SSH) fails with permission denied.
+        if isinstance(cmd, list) and cmd[0] == "ssh" and "tailscale" not in cmd:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=255,
+                stdout="",
+                stderr="Permission denied (publickey,password).",
+            )
+        # Second call (tailscale ssh) succeeds.
+        if isinstance(cmd, list) and cmd[0] == "tailscale":
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="ok\n", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    dev = {"name": "omnibook", "host": "100.118.212.8", "user": "gwuap"}
+    result = rc._ssh_cmd(dev, "whoami")
+
+    # Should have tried standard SSH first, then tailscale SSH.
+    ssh_calls = [c for c in calls if isinstance(c, list) and c[0] == "ssh"]
+    ts_calls = [c for c in calls if isinstance(c, list) and c[0] == "tailscale"]
+    assert len(ssh_calls) >= 1, "should attempt standard SSH first"
+    assert len(ts_calls) >= 1, "should fall back to tailscale SSH"
+    # The tailscale call must include 'ssh' and the user@host target.
+    assert "ssh" in ts_calls[0]
+    assert "gwuap@100.118.212.8" in ts_calls[0]
+    # The command must be passed through.
+    assert "whoami" in ts_calls[0]
+    # Final result should reflect the tailscale success.
+    assert result["ok"] is True
+    assert result["rc"] == 0
+
+
+def test_tailscale_transport_field_uses_tailscale_directly(tmp_path, monkeypatch):
+    """When device.transport == 'tailscale', skip standard SSH and use tailscale
+    SSH directly — no auth-error fallback needed."""
+    _fake_devices(tmp_path, monkeypatch)
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if isinstance(cmd, list) and cmd[0] == "tailscale":
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="done\n", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    dev = {"name": "tablet", "host": "100.100.134.82",
+           "user": "user", "transport": "tailscale"}
+    result = rc._ssh_cmd(dev, "uname -a")
+
+    # Must NOT have tried plain SSH — go straight to tailscale.
+    ssh_calls = [c for c in calls if isinstance(c, list) and c[0] == "ssh"]
+    ts_calls = [c for c in calls if isinstance(c, list) and c[0] == "tailscale"]
+    assert len(ssh_calls) == 0, "plain SSH should be skipped for tailscale transport"
+    assert len(ts_calls) == 1
+    assert result["ok"] is True
+
+
+def test_standard_ssh_success_no_fallback(tmp_path, monkeypatch):
+    """When standard SSH succeeds, no tailscale fallback should happen."""
+    _fake_devices(tmp_path, monkeypatch)
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="ok\n", stderr=""
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    dev = {"name": "desktop", "host": "100.97.24.91", "user": "gwuap"}
+    result = rc._ssh_cmd(dev, "uptime")
+
+    ssh_calls = [c for c in calls if isinstance(c, list) and c[0] == "ssh"]
+    ts_calls = [c for c in calls if isinstance(c, list) and c[0] == "tailscale"]
+    assert len(ssh_calls) == 1
+    assert len(ts_calls) == 0
+    assert result["ok"] is True

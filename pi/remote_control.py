@@ -41,6 +41,9 @@ from typing import Any, Dict, List, Optional
 
 DEVICES_FILE = Path.home() / ".config" / "rex-remote" / "devices.json"
 SSH_CONFIG = Path.home() / ".ssh" / "config"
+# DEVICES_FILE is the same registry written by scripts/rollout_ssh_key.py —
+# any device added via `python scripts/rollout_ssh_key.py user@host` shows up
+# automatically in discover_devices() on the next call (no restart needed).
 _ALLOW_FREE_SHELL = os.environ.get("REX_REMOTE_ALLOW_SHELL", "").strip().lower() in (
     "1", "true", "yes"
 )
@@ -168,29 +171,71 @@ def fleet_status() -> List[Dict[str, Any]]:
 
 
 # ── Command execution ───────────────────────────────────────────────────────
-def _ssh_cmd(dev: Dict[str, str], remote_cmd: str, timeout: float = 15.0) -> Dict[str, Any]:
-    t0 = time.monotonic()
-    target: List[str] = []
-    alias = dev.get("alias") or dev.get("name")
+def _build_target(dev: Dict[str, str]) -> tuple[List[str], str]:
+    """Return (ssh_target, user_at_host) for a device."""
+    alias = dev.get("alias") or dev.get("name") or ""
     user = dev.get("user")
     host = dev.get("host") or dev.get("ip_address") or alias
-    if alias and not host:
-        # Trust the ssh config alias: `ssh desktop <cmd>`
-        target = [alias]
-    elif user:
-        target = [f"{user}@{host}"]
+    if user:
+        target_str = f"{user}@{host}"
     else:
-        target = [host]
+        target_str = host
+    if alias and not dev.get("host") and not dev.get("ip_address"):
+        ssh_target: List[str] = [alias]
+    else:
+        ssh_target = [target_str]
+    return ssh_target, target_str
+
+
+def _run_tailscale_ssh(dev: Dict[str, str], target_str: str,
+                       remote_cmd: str, timeout: float, t0: float) -> Dict[str, Any]:
+    """Execute a command via `tailscale ssh` — no keys needed, works over tailnet."""
+    ts_args = ["tailscale", "ssh", target_str, remote_cmd]
+    try:
+        r = subprocess.run(
+            ts_args, capture_output=True, text=True, timeout=timeout,
+        )
+        return {
+            "name": dev.get("name", "?"),
+            "ok": r.returncode == 0,
+            "rc": r.returncode,
+            "stdout": (r.stdout or "").strip()[-2000:],
+            "stderr": (r.stderr or "").strip()[-1000:],
+            "elapsed_s": round(time.monotonic() - t0, 2),
+            "transport": "tailscale",
+        }
+    except subprocess.TimeoutExpired:
+        return {"name": dev.get("name", "?"), "ok": False, "rc": -1,
+                "stdout": "", "stderr": f"timeout after {timeout}s",
+                "transport": "tailscale"}
+    except Exception as e:  # noqa: BLE001
+        return {"name": dev.get("name", "?"), "ok": False, "rc": -2,
+                "stdout": "", "stderr": str(e), "transport": "tailscale"}
+
+
+def _ssh_cmd(dev: Dict[str, str], remote_cmd: str, timeout: float = 15.0) -> Dict[str, Any]:
+    t0 = time.monotonic()
+    transport = dev.get("transport", "ssh")
+    ssh_target, target_str = _build_target(dev)
+
+    # Explicit tailscale transport — skip standard SSH entirely.
+    if transport == "tailscale":
+        return _run_tailscale_ssh(dev, target_str, remote_cmd, timeout, t0)
 
     ssh_args = [
         "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
         "-o", "StrictHostKeyChecking=accept-new",
-        *target, remote_cmd,
+        *ssh_target, remote_cmd,
     ]
     try:
         r = subprocess.run(
             ssh_args, capture_output=True, text=True, timeout=timeout,
         )
+        # On auth failure, fall back to tailscale SSH (no keys needed).
+        if r.returncode == 255:
+            stderr_lower = (r.stderr or "").lower()
+            if "permission denied" in stderr_lower or "publickey" in stderr_lower:
+                return _run_tailscale_ssh(dev, target_str, remote_cmd, timeout, t0)
         return {
             "name": dev.get("name", "?"),
             "ok": r.returncode == 0,
