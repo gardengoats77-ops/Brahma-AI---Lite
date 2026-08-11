@@ -203,6 +203,26 @@ def _remote_tool_declarations() -> list[dict]:
                 "required": ["device", "action"],
             },
         },
+        {
+            "name": "home_query",
+            "description": (
+                "Query Home Assistant for the state of a device or sensor. "
+                "Use when the user asks about temperature, humidity, light status, "
+                "or any smart home entity. "
+                "entity_id: entity_id (e.g., 'sensor.bedroom_temperature') or "
+                "friendly name (e.g., 'bedroom temperature', 'living room light')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entity_id": {
+                        "type": "string",
+                        "description": "entity_id or friendly name of the device/sensor to query",
+                    },
+                },
+                "required": ["entity_id"],
+            },
+        },
     ]
 
 
@@ -332,6 +352,26 @@ async def _remote_execute(fc, tts=None) -> dict:
                 tts.speak(msg)
             return {"result": msg}
         return {"result": f"home control error: {result}"}
+    if name == "home_query":
+        from pi import home_auto
+
+        entity_id = args.get("entity_id", "")
+        if not entity_id:
+            return {"result": "error: entity_id is required"}
+        state = home_auto.get_state(entity_id)
+        if state is None:
+            return {"result": "Home Assistant not configured or entity not found"}
+        friendly = state.get("attributes", {}).get("friendly_name", entity_id)
+        value = state.get("state", "unknown")
+        # Build a voice-friendly reply
+        reply = f"The {friendly} is {value}"
+        # Add unit if present
+        unit = state.get("attributes", {}).get("unit_of_measurement")
+        if unit:
+            reply += f" {unit}"
+        if tts:
+            tts.speak(reply)
+        return {"result": reply, "state": state}
     return {"result": f"unknown tool {name}"}
 
 

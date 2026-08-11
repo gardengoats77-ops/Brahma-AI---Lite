@@ -254,3 +254,80 @@ class TestPayloadConstruction:
     def test_payload_with_both(self):
         payload = home_auto._build_payload("ON", brightness=128, color_temp=400)
         assert payload == {"state": "ON", "brightness": 128, "color_temp": 400}
+
+
+# ---------------------------------------------------------------------------
+# Test: Home Assistant state query (get_state)
+# ---------------------------------------------------------------------------
+
+class TestGetState:
+    """Tests for home_auto.get_state() — REST API query to Home Assistant."""
+
+    def test_get_state_returns_data(self, monkeypatch):
+        """get_state should return parsed JSON from HA REST API on success."""
+        import json as _json
+
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "state": "22.5",
+            "attributes": {"friendly_name": "Bedroom Temperature"},
+        }
+        fake_response.text = _json.dumps(fake_response.json.return_value)
+
+        monkeypatch.setattr(home_auto, "HA_URL", "http://localhost:8123")
+        monkeypatch.setattr(home_auto, "HA_TOKEN", "fake-token")
+        monkeypatch.setattr(home_auto, "_http_get", lambda url, headers: fake_response)
+
+        result = home_auto.get_state("sensor.bedroom_temperature")
+        assert result["state"] == "22.5"
+        assert result["attributes"]["friendly_name"] == "Bedroom Temperature"
+
+    def test_get_state_no_ha_configured(self, monkeypatch):
+        """get_state should return None when HA is not configured."""
+        monkeypatch.setattr(home_auto, "HA_URL", "")
+        monkeypatch.setattr(home_auto, "HA_TOKEN", "")
+
+        result = home_auto.get_state("sensor.bedroom_temperature")
+        assert result is None
+
+    def test_get_state_not_configured_returns_none(self, monkeypatch):
+        """get_state should return None when HA_URL is not set."""
+        monkeypatch.setattr(home_auto, "HA_URL", "")
+        monkeypatch.setattr(home_auto, "HA_TOKEN", "some-token")
+
+        result = home_auto.get_state("light.kitchen")
+        assert result is None
+
+    def test_get_state_with_friendly_name(self, monkeypatch):
+        """get_state should accept a friendly name and not crash."""
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "state": "ON",
+            "attributes": {"friendly_name": "Bedroom Light"},
+        }
+        fake_response.text = '{"state": "ON"}'
+
+        monkeypatch.setattr(home_auto, "HA_URL", "http://localhost:8123")
+        monkeypatch.setattr(home_auto, "HA_TOKEN", "fake-token")
+        monkeypatch.setattr(home_auto, "_http_get", lambda url, headers: fake_response)
+
+        # Friendly name should be converted to entity_id format or at least not crash
+        result = home_auto.get_state("bedroom light")
+        assert result is not None
+        assert result["state"] == "ON"
+
+    def test_get_state_api_error(self, monkeypatch):
+        """get_state should return None when the API returns an error."""
+        fake_response = MagicMock()
+        fake_response.status_code = 404
+        fake_response.json.return_value = {"message": "Entity not found"}
+        fake_response.text = '{"message": "Entity not found"}'
+
+        monkeypatch.setattr(home_auto, "HA_URL", "http://localhost:8123")
+        monkeypatch.setattr(home_auto, "HA_TOKEN", "fake-token")
+        monkeypatch.setattr(home_auto, "_http_get", lambda url, headers: fake_response)
+
+        result = home_auto.get_state("sensor.nonexistent")
+        assert result is None

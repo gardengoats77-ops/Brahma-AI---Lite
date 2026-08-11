@@ -27,6 +27,86 @@ MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 MQTT_USER = os.environ.get("MQTT_USER", "")
 MQTT_PASS = os.environ.get("MQTT_PASS", "")
 
+# Home Assistant REST API configuration
+HA_URL = os.environ.get("HA_URL", "http://localhost:8123")
+HA_TOKEN = os.environ.get("HA_TOKEN", "")
+
+# Module-level client (lazy-initialized)
+_client: Optional[object] = None
+
+
+def _friendly_to_entity_id(name: str) -> str:
+    """Convert a human-friendly name to a Home Assistant entity_id.
+    
+    Handles:
+      - Already valid entity_id (contains a dot): returned lowercased
+      - Friendly name (no dot): prefixed with 'sensor.' and underscored
+    """
+    name = name.lower().strip()
+    if "." in name:
+        return name
+    # Convert "bedroom temperature" -> "sensor.bedroom_temperature"
+    safe = name.replace(" ", "_")
+    return f"sensor.{safe}"
+
+
+def _http_get(url: str, headers: dict) -> Optional[object]:
+    """Perform an HTTP GET request and return the response object.
+    
+    Returns None if the request fails (connection error, timeout, etc.)
+    or if requests is not installed.
+    """
+    try:
+        import requests
+    except ImportError:
+        log.warning("requests not installed — Home Assistant state query disabled")
+        return None
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=5)
+        return resp
+    except Exception as e:  # noqa: BLE001
+        log.error("HTTP GET failed for %s: %s", url, e)
+        return None
+
+
+def get_state(entity_id: str) -> Optional[dict]:
+    """Query Home Assistant REST API for the state of an entity.
+    
+    Args:
+        entity_id: entity_id (e.g., 'sensor.bedroom_temperature') or 
+                  friendly name (e.g., 'bedroom temperature')
+    
+    Returns:
+        Parsed JSON dict with 'state' and 'attributes' on success,
+        or None if HA is not configured or the request fails.
+    """
+    if not HA_URL or not HA_TOKEN:
+        return None
+
+    # Convert friendly name to entity_id if needed
+    eid = _friendly_to_entity_id(entity_id)
+    
+    url = f"{HA_URL}/api/states/{eid}"
+    headers = {
+        "Authorization": f"Bearer {HA_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    resp = _http_get(url, headers)
+    if resp is None:
+        return None
+
+    if resp.status_code == 200:
+        try:
+            return resp.json()
+        except Exception as e:  # noqa: BLE001
+            log.error("Failed to parse HA response JSON: %s", e)
+            return None
+    else:
+        log.warning("HA API returned %s for %s", resp.status_code, eid)
+        return None
+
 # Module-level client (lazy-initialized)
 _client: Optional[object] = None
 
