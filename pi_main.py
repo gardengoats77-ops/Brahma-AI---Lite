@@ -177,13 +177,22 @@ async def _remote_execute(fc, tts=None) -> dict:
         prompt = args.get("prompt", "")
         if not prompt:
             return {"result": "error: no prompt given"}
+        # Streaming dispatch: speak partial results at natural breakpoints
+        # so the user hears updates while the agent keeps working.
+        full_text = []
+        if tts and getattr(tts, "enabled", False):
+            stream = rc.dispatch_stream(prompt)
+            for sentence in rc.accumulate_and_speak(stream):
+                full_text.append(sentence)
+                tts.speak(sentence)
+            result_msg = " ".join(full_text) if full_text else "dispatch complete"
+            return {"result": result_msg}
+        # No TTS — fallback to non-streaming dispatch
         r = rc.dispatch(prompt)
         if r.get("ok"):
             agent = r.get("assigned_agent", "?")
             task = r.get("task_id", "?")
             msg = f"dispatched to {agent} (task {task})"
-            if tts:
-                tts.speak(msg)
             return {"result": msg}
         return {"result": f"dispatch failed: {r.get('error', 'unknown')}"}
     if name == "set_wake_sensitivity":

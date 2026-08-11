@@ -24,6 +24,14 @@ def test_voice_confirmation_on_dispatch():
     fc.args = {"prompt": "research quantum computing"}
 
     with patch("pi.remote_control") as mock_rc:
+        # Mock the streaming path: dispatch_stream yields deltas, accumulate_and_speak
+        # splits them into sentences for TTS.
+        mock_rc.dispatch_stream = MagicMock(
+            return_value=iter(["Dispatched ", "to ", "rex-code ", "task ", "abc123."])
+        )
+        mock_rc.accumulate_and_speak = MagicMock(
+            side_effect=lambda chunks: list(chunks)
+        )
         mock_rc.dispatch.return_value = {
             "ok": True,
             "assigned_agent": "rex-code",
@@ -32,11 +40,12 @@ def test_voice_confirmation_on_dispatch():
 
         result = asyncio.run(_remote_execute(fc, tts=mock_tts))
 
-    assert result["result"] == "dispatched to rex-code (task abc123)"
-    mock_tts.speak.assert_called_once()
-    spoken = mock_tts.speak.call_args[0][0]
-    assert "rex-code" in spoken
-    assert "abc123" in spoken
+    # TTS should have been called for each sentence from accumulate_and_speak
+    assert mock_tts.speak.call_count >= 1
+    # Collect all spoken text
+    spoken_all = " ".join(str(c[0][0]) for c in mock_tts.speak.call_args_list)
+    assert "rex-code" in spoken_all
+    assert "abc123" in spoken_all
 
 
 def test_voice_confirmation_on_open_app():

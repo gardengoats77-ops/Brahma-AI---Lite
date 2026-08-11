@@ -403,3 +403,104 @@ def test_file_send_bridge(tmp_path, monkeypatch):
     result = rc.file_send("desktop", str(src), "/tmp/doc.pdf")
     assert result["ok"] is True
     assert result["sha256"] == src_hash
+
+
+# ─── Streaming dispatch ──────────────────────────────────────────────────────
+
+def test_streaming_dispatch(monkeypatch):
+    """dispatch_stream should parse SSE events and yield partial text chunks."""
+    import io
+
+    # Fake SSE stream: server sends partial text deltas
+    sse_body = (
+        "data: {\"delta\": \"Checking\"}\n\n"
+        "data: {\"delta\": \" the\"}\n\n"
+        "data: {\"delta\": \" fleet\"}\n\n"
+        "data: {\"delta\": \" status.\"}\n\n"
+        "data: {\"delta\": \" All\"}\n\n"
+        "data: {\"delta\": \" systems\"}\n\n"
+        "data: {\"delta\": \" online.\"}\n\n"
+        "data: [DONE]\n\n"
+    )
+
+    class FakeResp:
+        def read(self):
+            return sse_body.encode()
+
+        def __iter__(self):
+            # urllib HTTPResponse iterates line-by-line with trailing \n
+            for line in sse_body.split("\n"):
+                yield (line + "\n").encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+    def fake_urlopen(req, timeout=None):
+        return FakeResp()
+
+    monkeypatch.setattr(rc, "_brain_token", lambda: "fake-token")
+    monkeypatch.setattr(
+        __import__("urllib.request", fromlist=["urlopen"]),
+        "urlopen",
+        fake_urlopen,
+    )
+
+    chunks = list(rc.dispatch_stream("check fleet"))
+    # Should yield all the delta fragments
+    assert chunks == [
+        "Checking", " the", " fleet", " status.",
+        " All", " systems", " online.",
+    ]
+
+
+def test_streaming_dispatch_accumulate_and_breakpoints(monkeypatch):
+    """accumulate_and_speak should buffer partial text and split at sentence
+    boundaries, yielding complete sentences for TTS."""
+    chunks = ["Hello", " world", ". ", "How", " are", " you", "? ", "Fine", "."]
+
+    results = list(rc.accumulate_and_speak(iter(chunks)))
+    # Should split at ". " and "? " boundaries
+    assert "Hello world." in results
+    assert "How are you?" in results
+    assert "Fine." in results
+
+
+def test_dispatch_stream_fallback_on_error(monkeypatch):
+    """When streaming endpoint returns 404 or non-SSE, fallback to regular
+    dispatch() which returns the final response."""
+    import urllib.error
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(
+            req.full_url, 404, "Not Found", {}, io.BytesIO(b"no stream")
+        )
+
+    monkeypatch.setattr(rc, "_brain_token", lambda: "fake-token")
+    monkeypatch.setattr(
+        __import__("urllib.request", fromlist=["urlopen"]),
+        "urlopen",
+        fake_urlopen,
+    )
+    # Patch the non-streaming dispatch to return a known value
+    monkeypatch.setattr(
+        rc,
+        "dispatch",
+        lambda prompt, timeout=30.0: {
+            "ok": True,
+            "status": "completed",
+            "assigned_agent": "fleet-agent",
+            "task_id": "t-1",
+            "result": "Fleet is online",
+        },
+    )
+
+    # dispatch_stream should catch HTTPError and fallback to dispatch()
+    result = rc.dispatch_with_fallback("check fleet")
+    assert result.get("ok") is True
+    assert result.get("result") == "Fleet is online"
+
+
+import io  # noqa: E402 — used in test_dispatch_stream_fallback_on_error

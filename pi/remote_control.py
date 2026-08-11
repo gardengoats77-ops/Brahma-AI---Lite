@@ -421,6 +421,122 @@ def list_agents(timeout: float = 10.0) -> Dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
 
+def dispatch_stream(prompt: str, timeout: float = 30.0):
+    """Stream partial results from the brain's SSE dispatch endpoint.
+
+    Yields text deltas as they arrive. Each SSE event is expected to be a
+    JSON object with a ``delta`` field. Terminates on ``[DONE]`` marker.
+
+    This is a generator — callers iterate over it to receive streaming
+    partial results. If the server does not support SSE (returns non-200),
+    the generator yields nothing; use :func:`dispatch_with_fallback` to
+    automatically fall back to the non-streaming endpoint.
+    """
+    import urllib.request
+    import urllib.error
+
+    token = _brain_token()
+    if not token:
+        return
+
+    body = json.dumps({"prompt": prompt}).encode()
+    req = urllib.request.Request(
+        _brain_url("/api/dispatch/stream"),
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line or line.startswith(":"):
+                    continue  # skip comments / keep-alive
+                if line.startswith("data:"):
+                    payload = line[5:].strip()
+                    if payload == "[DONE]":
+                        return
+                    try:
+                        evt = json.loads(payload)
+                    except (json.JSONDecodeError, ValueError):
+                        # Plain text delta (no JSON envelope)
+                        yield payload
+                        continue
+                    if "delta" in evt:
+                        yield evt["delta"]
+                    elif "text" in evt:
+                        yield evt["text"]
+    except urllib.error.HTTPError:
+        return  # fallback handled by dispatch_with_fallback
+    except Exception:
+        return
+
+
+def accumulate_and_speak(chunks):
+    """Buffer streaming deltas and emit complete sentences/phrases for TTS.
+
+    Consumes an iterator of text fragments, accumulates them into a buffer,
+    and yields strings each time a natural speech boundary is reached:
+    sentence endings (``. ``, ``? ``, ``! ``), commas (if the buffer is
+    already long enough to be a phrase), or the stream ends.
+
+    This lets the Pi speak partial results *while the agent keeps working*
+    instead of waiting for the full response.
+    """
+    buffer = ""
+    for fragment in chunks:
+        buffer += fragment
+        # Sentence boundary — emit everything up to and including the marker
+        for marker in (". ", "? ", "! ", ".\n", "?\n", "!\n"):
+            idx = buffer.find(marker)
+            if idx >= 0:
+                yield buffer[: idx + len(marker)].strip()
+                buffer = buffer[idx + len(marker) :]
+                break
+        else:
+            # No sentence break, but a comma in a long enough phrase
+            # is a good TTS breather (avoid choppy speech).
+            if len(buffer) > 60:
+                comma_idx = buffer.rfind(", ")
+                if comma_idx > 20:
+                    yield buffer[:comma_idx].strip()
+                    buffer = buffer[comma_idx + 2 :]
+    # Emit any leftover text
+    if buffer.strip():
+        yield buffer.strip()
+
+
+def dispatch_with_fallback(prompt: str, timeout: float = 30.0) -> Dict[str, Any]:
+    """Try streaming dispatch; fall back to non-streaming if SSE unavailable.
+
+    Returns the final dispatch response dict (same shape as :func:`dispatch`).
+    Callers that don't need streaming partials can use this directly.
+    """
+    # Collect all deltas from the stream
+    deltas = []
+    try:
+        for delta in dispatch_stream(prompt, timeout=timeout):
+            deltas.append(delta)
+    except Exception:
+        pass  # network hiccup — fall through to non-streaming
+
+    if deltas:
+        full_text = "".join(deltas)
+        return {
+            "ok": True,
+            "status": "completed",
+            "result": full_text,
+            "streamed": True,
+        }
+
+    # Fallback to non-streaming dispatch
+    return dispatch(prompt, timeout=timeout)
+
+
 if __name__ == "__main__":
     import sys
     args = sys.argv[1:]
