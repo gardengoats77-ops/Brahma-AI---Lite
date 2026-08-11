@@ -164,6 +164,45 @@ def _remote_tool_declarations() -> list[dict]:
                 "required": ["query"],
             },
         },
+        {
+            "name": "home_control",
+            "description": (
+                "Control a smart home device via MQTT/Home Assistant. "
+                "device: name of the device (e.g., 'living_room', 'bedroom_fan'). "
+                "action: 'on', 'off', or 'toggle'. "
+                "Optionally set brightness (0-255) or color_temp (mireds)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "device": {
+                        "type": "string",
+                        "description": "device name (e.g., 'living_room', 'bedroom')",
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["on", "off", "toggle"],
+                        "description": "what to do with the device",
+                    },
+                    "brightness": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 255,
+                        "description": "optional brightness level (0-255)",
+                    },
+                    "color_temp": {
+                        "type": "integer",
+                        "description": "optional color temperature in mireds",
+                    },
+                    "device_type": {
+                        "type": "string",
+                        "enum": ["light", "switch"],
+                        "description": "device type: 'light' or 'switch' (default: light)",
+                    },
+                },
+                "required": ["device", "action"],
+            },
+        },
     ]
 
 
@@ -268,6 +307,31 @@ async def _remote_execute(fc, tts=None) -> dict:
             "result": f"Task {task} was assigned to {agent}. Prompt: {prompt}. Result: {result}",
             "entry": entry,
         }
+    if name == "home_control":
+        from pi import home_auto
+
+        device = args.get("device", "")
+        action = args.get("action", "")
+        if not device or not action:
+            return {"result": "error: device and action are required"}
+        brightness = args.get("brightness")
+        color_temp = args.get("color_temp")
+        device_type = args.get("device_type", "light")
+        result = home_auto.home_control(
+            device, action,
+            brightness=brightness, color_temp=color_temp,
+            device_type=device_type,
+        )
+        if result == "MQTT not configured":
+            return {"result": "home automation unavailable — MQTT not configured"}
+        if result is True:
+            msg = f"{action}d {device}"
+            if brightness is not None:
+                msg += f" at brightness {brightness}"
+            if tts:
+                tts.speak(msg)
+            return {"result": msg}
+        return {"result": f"home control error: {result}"}
     return {"result": f"unknown tool {name}"}
 
 
