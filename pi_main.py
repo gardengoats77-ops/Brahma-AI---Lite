@@ -40,6 +40,7 @@ from pi.whisplay_audio import WhisplayAudio, discover_whisplay_devices
 from pi.whisplay_display import WhisplayDisplay
 from pi.whisplay_dashboard import get_dashboard
 from pi.hailo_engine import HailoEngine
+from pi import dispatch_memory
 
 if TYPE_CHECKING:
     from wake_word import WakeWordListener
@@ -143,6 +144,25 @@ def _remote_tool_declarations() -> list[dict]:
                 "required": ["value"],
             },
         },
+        {
+            "name": "recall_dispatch",
+            "description": (
+                "Recall a previous brain dispatch from history. "
+                "Use 'last' for the most recent, 'last research' for the most "
+                "recent research task, 'last from <agent>' for a specific agent, "
+                "or a task_id for an exact match."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "recall query: 'last', 'last research', 'last from <agent>', or a task_id",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
     ]
 
 
@@ -186,6 +206,13 @@ async def _remote_execute(fc, tts=None) -> dict:
                 full_text.append(sentence)
                 tts.speak(sentence)
             result_msg = " ".join(full_text) if full_text else "dispatch complete"
+            # Record the dispatch for later recall
+            dispatch_memory.record_dispatch(
+                task_id="stream-" + str(int(time.time())),
+                assigned_agent="brain",
+                prompt=prompt,
+                result=result_msg,
+            )
             return {"result": result_msg}
         # No TTS — fallback to non-streaming dispatch
         r = rc.dispatch(prompt)
@@ -193,6 +220,13 @@ async def _remote_execute(fc, tts=None) -> dict:
             agent = r.get("assigned_agent", "?")
             task = r.get("task_id", "?")
             msg = f"dispatched to {agent} (task {task})"
+            # Record the dispatch for later recall
+            dispatch_memory.record_dispatch(
+                task_id=task,
+                assigned_agent=agent,
+                prompt=prompt,
+                result=msg,
+            )
             return {"result": msg}
         return {"result": f"dispatch failed: {r.get('error', 'unknown')}"}
     if name == "set_wake_sensitivity":
@@ -216,6 +250,23 @@ async def _remote_execute(fc, tts=None) -> dict:
                 return {"result": f"error: invalid numeric value {raw!r}"}
         listener.set_sensitivity(value)
         return {"result": f"wake sensitivity set to {value:.2f} ({listener._exp():d})"}
+    if name == "recall_dispatch":
+        query = args.get("query", "last")
+        entry = dispatch_memory.recall_dispatch(query)
+        if entry is None:
+            return {"result": f"no dispatch found for query: {query!r}"}
+        # Format a concise voice-friendly summary
+        agent = entry.get("assigned_agent", "?")
+        task = entry.get("task_id", "?")
+        prompt = entry.get("prompt", "")
+        result = entry.get("result", "")
+        # Truncate result for voice output
+        if len(result) > 200:
+            result = result[:200] + "..."
+        return {
+            "result": f"Task {task} was assigned to {agent}. Prompt: {prompt}. Result: {result}",
+            "entry": entry,
+        }
     return {"result": f"unknown tool {name}"}
 
 
