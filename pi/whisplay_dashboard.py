@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import mmap
 import os
 import shutil
@@ -269,6 +270,11 @@ class WhisplayDashboard:
         self._btn_was_down = False
         self._wake_listener = wake_listener  # WakeWordListener or None
 
+        # Breathing animation: pulses blue LED when IDLE so the device
+        # visibly "breathes" — confirms it's alive without screen.
+        self._breathing = False
+        self._breath_thread: Optional[threading.Thread] = None
+
         # Double-press detection: timestamps of recent presses
         self._press_times: list[float] = []
         self._double_press_window = 0.5  # seconds
@@ -321,6 +327,10 @@ class WhisplayDashboard:
 
     def set_voice_state(self, label: str):
         self._voice_state = label
+        if label in ("IDLE", "idle"):
+            self._start_breathing()
+        else:
+            self._stop_breathing()
         self._sync_led()
         self.render()
 
@@ -348,6 +358,43 @@ class WhisplayDashboard:
                 self._board.set_rgb(r, g, b)
         except Exception as e:  # noqa: BLE001
             log.debug("whisplay LED sync failed: %s", e)
+
+    def _start_breathing(self):
+        """Start the LED breathing animation (sine pulse on blue channel).
+
+        Subtle effect: blue channel oscillates 0-64 on a 2.5 s sine wave,
+        50 ms updates. Confirms the device is alive without the screen.
+        """
+        if self._breathing:
+            return
+        self._breathing = True
+        self._breath_thread = threading.Thread(
+            target=self._breathing_loop, daemon=True, name="whisplay-breath"
+        )
+        self._breath_thread.start()
+
+    def _stop_breathing(self):
+        """Stop the LED breathing animation."""
+        self._breathing = False
+        if self._breath_thread is not None:
+            self._breath_thread.join(timeout=1.0)
+            self._breath_thread = None
+
+    def _breathing_loop(self):
+        """Sine-wave pulse on the blue channel while self._breathing is True."""
+        while self._breathing:
+            # 2.5 s period, 50 ms step — full sine wave 0 → 2π
+            t = time.monotonic()
+            phase = (t % 2.5) / 2.5 * 2 * math.pi
+            blue = int((math.sin(phase) + 1) / 2 * 64)  # 0..64
+            try:
+                if self._mode == "daemon" and self._client is not None:
+                    self._client.led(30, 60, blue)
+                elif self._mode == "direct" and self._board is not None:
+                    self._board.set_rgb(30, 60, blue)
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(0.05)
 
     def _ptt_pressed(self):
         if self._on_ptt:

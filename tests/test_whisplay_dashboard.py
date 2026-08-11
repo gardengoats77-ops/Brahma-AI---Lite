@@ -16,6 +16,7 @@ import os
 import time
 
 import pytest
+from unittest.mock import MagicMock
 
 _MODULE = None
 for _f in os.listdir(os.path.join(os.path.dirname(__file__), "..", "pi")):
@@ -168,3 +169,17 @@ def test_single_press_still_triggers_ptt(monkeypatch):
     dash._client = FakeClient()
     dash._poll_button()
     assert ptt_calls == [1]
+
+
+def test_breathing_starts_on_idle(monkeypatch):
+    """Breathing animation runs when voice state is IDLE (sine wave on blue)."""
+    _set_defaults(monkeypatch)
+    led_calls = []
+    dash = _WhisplayDashboard(on_push_to_talk=lambda: None)
+    dash._mode = "daemon"
+    dash._client = MagicMock(led=lambda *a: led_calls.append(a))
+    dash.set_voice_state("IDLE")
+    time.sleep(0.5)
+    blue_values = [c[2] for c in led_calls if len(c) == 3]
+    assert len(blue_values) > 1
+    assert max(blue_values) > min(blue_values)
