@@ -43,6 +43,7 @@ from pi.hailo_engine import HailoEngine
 from pi.gesture_control import GestureController
 from pi import dispatch_memory
 from pi import memory as conversation_memory
+from pi.error_recovery import with_error_recovery, CircuitBreaker
 
 if TYPE_CHECKING:
     from wake_word import WakeWordListener
@@ -79,6 +80,11 @@ VOSK_MODEL_DIR = os.environ.get(
 # so _remote_execute can adjust sensitivity live without reopening audio.
 _wakeword_ref: "dict[str, WakeWordListener | None]" = {"listener": None}
 _tts_ref: "dict[str, object | None]" = {"tts": None}
+
+# Circuit breakers for external calls (Phase 11.1: Error Recovery)
+_brain_circuit = CircuitBreaker(failure_threshold=3, cooldown=30.0)
+_fleet_circuit = CircuitBreaker(failure_threshold=3, cooldown=30.0)
+_tts_circuit = CircuitBreaker(failure_threshold=5, cooldown=10.0)
 
 
 def _remote_tool_declarations() -> list[dict]:
@@ -298,22 +304,34 @@ async def _remote_execute(fc, tts=None) -> dict:
     name = fc.name
     args = dict(fc.args or {})
     if name == "fleet_status":
-        rows = []
-        for st in rc.fleet_status():
-            rows.append(f"{st['name']}: {'ok' if st['reachable'] else 'down'}")
-        return {"result": "; ".join(rows) or "no devices"}
+        try:
+            rows = []
+            for st in rc.fleet_status():
+                rows.append(f"{st['name']}: {'ok' if st['reachable'] else 'down'}")
+            return {"result": "; ".join(rows) or "no devices"}
+        except Exception as e:
+            log.warning("fleet_status failed: %s", e)
+            if tts:
+                tts.speak("Network error, switching to offline mode")
+            return {"result": "error: fleet status unavailable"}
     if name == "fleet_open_app":
         dev = args.get("device", "")
         app = args.get("app", "browser")
         if not dev:
             return {"result": "error: no device given"}
-        r = rc.open_app(dev, app)
-        if r.get("ok"):
-            msg = f"opened {app} on {dev}"
+        try:
+            r = rc.open_app(dev, app)
+            if r.get("ok"):
+                msg = f"opened {app} on {dev}"
+                if tts:
+                    tts.speak(msg)
+                return {"result": msg}
+            return {"result": f"failed to open {app} on {dev}: {r.get('stderr') or r.get('rc')}"}
+        except Exception as e:
+            log.warning("fleet_open_app failed: %s", e)
             if tts:
-                tts.speak(msg)
-            return {"result": msg}
-        return {"result": f"failed to open {app} on {dev}: {r.get('stderr') or r.get('rc')}"}
+                tts.speak("Network error, switching to offline mode")
+            return {"result": f"error: could not open {app} on {dev}"}
     if name == "brain_dispatch":
         prompt = args.get("prompt", "")
         if not prompt:
@@ -322,34 +340,46 @@ async def _remote_execute(fc, tts=None) -> dict:
         # so the user hears updates while the agent keeps working.
         full_text = []
         if tts and getattr(tts, "enabled", False):
-            stream = rc.dispatch_stream(prompt)
-            for sentence in rc.accumulate_and_speak(stream):
-                full_text.append(sentence)
-                tts.speak(sentence)
-            result_msg = " ".join(full_text) if full_text else "dispatch complete"
-            # Record the dispatch for later recall
-            dispatch_memory.record_dispatch(
-                task_id="stream-" + str(int(time.time())),
-                assigned_agent="brain",
-                prompt=prompt,
-                result=result_msg,
-            )
-            return {"result": result_msg}
+            try:
+                stream = rc.dispatch_stream(prompt)
+                for sentence in rc.accumulate_and_speak(stream):
+                    full_text.append(sentence)
+                    tts.speak(sentence)
+                result_msg = " ".join(full_text) if full_text else "dispatch complete"
+                # Record the dispatch for later recall
+                dispatch_memory.record_dispatch(
+                    task_id="stream-" + str(int(time.time())),
+                    assigned_agent="brain",
+                    prompt=prompt,
+                    result=result_msg,
+                )
+                return {"result": result_msg}
+            except Exception as e:
+                log.warning("brain_dispatch streaming failed: %s", e)
+                if tts:
+                    tts.speak("Network error, switching to offline mode")
+                return {"result": "error: brain dispatch unavailable"}
         # No TTS — fallback to non-streaming dispatch
-        r = rc.dispatch(prompt)
-        if r.get("ok"):
-            agent = r.get("assigned_agent", "?")
-            task = r.get("task_id", "?")
-            msg = f"dispatched to {agent} (task {task})"
-            # Record the dispatch for later recall
-            dispatch_memory.record_dispatch(
-                task_id=task,
-                assigned_agent=agent,
-                prompt=prompt,
-                result=msg,
-            )
-            return {"result": msg}
-        return {"result": f"dispatch failed: {r.get('error', 'unknown')}"}
+        try:
+            r = rc.dispatch(prompt)
+            if r.get("ok"):
+                agent = r.get("assigned_agent", "?")
+                task = r.get("task_id", "?")
+                msg = f"dispatched to {agent} (task {task})"
+                # Record the dispatch for later recall
+                dispatch_memory.record_dispatch(
+                    task_id=task,
+                    assigned_agent=agent,
+                    prompt=prompt,
+                    result=msg,
+                )
+                return {"result": msg}
+            return {"result": f"dispatch failed: {r.get('error', 'unknown')}"}
+        except Exception as e:
+            log.warning("brain_dispatch failed: %s", e)
+            if tts:
+                tts.speak("Network error, switching to offline mode")
+            return {"result": "error: brain dispatch unavailable"}
     if name == "set_wake_sensitivity":
         from wake_word import WakeWordListener
 
@@ -398,41 +428,53 @@ async def _remote_execute(fc, tts=None) -> dict:
         brightness = args.get("brightness")
         color_temp = args.get("color_temp")
         device_type = args.get("device_type", "light")
-        result = home_auto.home_control(
-            device, action,
-            brightness=brightness, color_temp=color_temp,
-            device_type=device_type,
-        )
-        if result == "MQTT not configured":
-            return {"result": "home automation unavailable — MQTT not configured"}
-        if result is True:
-            msg = f"{action}d {device}"
-            if brightness is not None:
-                msg += f" at brightness {brightness}"
+        try:
+            result = home_auto.home_control(
+                device, action,
+                brightness=brightness, color_temp=color_temp,
+                device_type=device_type,
+            )
+            if result == "MQTT not configured":
+                return {"result": "home automation unavailable — MQTT not configured"}
+            if result is True:
+                msg = f"{action}d {device}"
+                if brightness is not None:
+                    msg += f" at brightness {brightness}"
+                if tts:
+                    tts.speak(msg)
+                return {"result": msg}
+            return {"result": f"home control error: {result}"}
+        except Exception as e:
+            log.warning("home_control failed: %s", e)
             if tts:
-                tts.speak(msg)
-            return {"result": msg}
-        return {"result": f"home control error: {result}"}
+                tts.speak("Network error, switching to offline mode")
+            return {"result": "error: home automation unavailable"}
     if name == "home_query":
         from pi import home_auto
 
         entity_id = args.get("entity_id", "")
         if not entity_id:
             return {"result": "error: entity_id is required"}
-        state = home_auto.get_state(entity_id)
-        if state is None:
-            return {"result": "Home Assistant not configured or entity not found"}
-        friendly = state.get("attributes", {}).get("friendly_name", entity_id)
-        value = state.get("state", "unknown")
-        # Build a voice-friendly reply
-        reply = f"The {friendly} is {value}"
-        # Add unit if present
-        unit = state.get("attributes", {}).get("unit_of_measurement")
-        if unit:
-            reply += f" {unit}"
-        if tts:
-            tts.speak(reply)
-        return {"result": reply, "state": state}
+        try:
+            state = home_auto.get_state(entity_id)
+            if state is None:
+                return {"result": "Home Assistant not configured or entity not found"}
+            friendly = state.get("attributes", {}).get("friendly_name", entity_id)
+            value = state.get("state", "unknown")
+            # Build a voice-friendly reply
+            reply = f"The {friendly} is {value}"
+            # Add unit if present
+            unit = state.get("attributes", {}).get("unit_of_measurement")
+            if unit:
+                reply += f" {unit}"
+            if tts:
+                tts.speak(reply)
+            return {"result": reply, "state": state}
+        except Exception as e:
+            log.warning("home_query failed: %s", e)
+            if tts:
+                tts.speak("Network error, switching to offline mode")
+            return {"result": "error: home query unavailable"}
     if name == "schedule_reminder":
         from pi import scheduler
 
