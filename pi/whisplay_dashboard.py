@@ -63,6 +63,10 @@ _FONT_BIG = ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", 36)
 # HAT's physical mounting (native panel is 240x280 portrait).
 _ROTATE_DEG = 90
 
+# Watchdog: if no successful render in this many seconds, the panel is
+# considered stale (likely a probe client stole focus). Auto-reacquire.
+_STALE_THRESHOLD = 30.0
+
 # Desktop REX brain endpoint (Tailscale peer "desktop"). Probed with a short
 # TCP connect so the HAT shows a live "link: ok/down" row syncing with the
 # desktop machine.
@@ -150,6 +154,10 @@ class _DaemonClient:
         except Exception:
             pass
         self._fb = None
+
+    def disconnect(self):
+        """Close the framebuffer + release focus (but keep socket session)."""
+        self.teardown()
 
     def draw(self, x: int, y: int, width: int, height: int, data: bytes):
         if self._mmap is None or not self._available:
@@ -448,13 +456,45 @@ class WhisplayDashboard:
             pass
 
     def _loop(self):
+        self._last_render_time = time.monotonic()
         while self._running:
             try:
                 self.render()
+                self._last_render_time = time.monotonic()
             except Exception as e:  # noqa: BLE001
                 log.warning("whishered render error: %s", e)
             self._poll_button()
+            self._watchdog_check()
             time.sleep(self._poll)
+
+    def _watchdog_check(self):
+        """Detect stale/black framebuffer and auto-recover.
+
+        If no successful render in > STALE_THRESHOLD seconds, a probe
+        client likely stole focus (the 'transient-socket-probe-blanks-panel'
+        trap). Disconnect + reconnect + reacquire focus to bring the panel
+        back to life.
+        """
+        stale = time.monotonic() - self._last_render_time > _STALE_THRESHOLD
+        if not stale:
+            return
+        log.warning("whisplay watchdog: stale for %.0fs — reacquiring focus",
+                    time.monotonic() - self._last_render_time)
+        try:
+            if self._client is not None:
+                self._client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        self._client = None
+        self._mode = None
+        fresh = _DaemonClient()
+        if fresh.connect():
+            self._client = fresh
+            self._mode = "daemon"
+            log.info("whisplay watchdog: focus reacquired")
+        else:
+            log.warning("whisplay watchdog: reacquire failed")
+        self._last_render_time = time.monotonic()
 
     def _poll_button(self):
         """Debounced PTT edge detection for daemon mode (button owned by
