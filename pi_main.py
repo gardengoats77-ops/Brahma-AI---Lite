@@ -38,6 +38,7 @@ import linux_shim  # noqa: F401
 from pi.platform import is_raspberry_pi
 from pi.whisplay_audio import WhisplayAudio, discover_whisplay_devices
 from pi.whisplay_display import WhisplayDisplay
+from pi.whisplay_dashboard import get_dashboard
 from pi.hailo_engine import HailoEngine
 
 log = logging.getLogger("brahma.pi")
@@ -275,6 +276,18 @@ async def _voice_loop(
     except Exception as e:
         log.warning("Wake word unavailable: %s — using push-to-talk", e)
         wakeword = None
+
+    # ── Start Whisplay dashboard (wired to wake word for double-press toggle)
+    dash = get_dashboard(
+        on_push_to_talk=lambda: log.info("PTT pressed"),
+        wake_listener=wakeword,
+    )
+    dash.set_voice_state("IDLE")
+    if wakeword and wakeword.enabled:
+        dash.set_voice_state("LISTENING")
+    else:
+        dash.set_muted(True)
+    log.info("Whisplay dashboard started (available=%s)", dash.available)
 
     # ── Main loop: wake -> Live session -> idle -> re-arm ────────────────
     while True:

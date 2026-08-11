@@ -13,6 +13,7 @@ drift (whisplay / whiplay / whispay ... variants have bitten this test).
 
 import importlib
 import os
+import time
 
 import pytest
 
@@ -86,3 +87,84 @@ def test_led_sync_daemon(monkeypatch):
     assert calls[-1] == (0, 160, 255)
     dash.set_muted(True)
     assert calls[-1] == (255, 30, 30)
+
+
+def test_double_press_toggles_wake_word(monkeypatch):
+    """Double-press PTT within 500ms toggles wake word listener off."""
+    _set_defaults(monkeypatch)
+    dash = _WhisplayDashboard(on_push_to_talk=lambda: None)
+    calls = []
+
+    class FakeWakeListener:
+        enabled = True
+
+        def set_enabled(self, v):
+            calls.append(v)
+            self.enabled = v
+
+    dash._wake_listener = FakeWakeListener()
+    dash._btn_was_down = False
+    # First press
+    dash._on_button_down()
+    time.sleep(0.1)
+    dash._on_button_up()
+    time.sleep(0.1)
+    # Second press (within 500ms window)
+    dash._on_button_down()
+    time.sleep(0.1)
+    dash._on_button_up()
+    assert calls == [False]  # toggled off (was True, now False)
+
+
+def test_double_press_outside_window_no_toggle(monkeypatch):
+    """Single press or slow double-press does NOT toggle wake word."""
+    _set_defaults(monkeypatch)
+    dash = _WhisplayDashboard(on_push_to_talk=lambda: None)
+    calls = []
+
+    class FakeWakeListener:
+        enabled = True
+
+        def set_enabled(self, v):
+            calls.append(v)
+            self.enabled = v
+
+    dash._wake_listener = FakeWakeListener()
+    dash._btn_was_down = False
+    # Single press only
+    dash._on_button_down()
+    time.sleep(0.1)
+    dash._on_button_up()
+    assert calls == []  # no toggle
+    # Wait past the window
+    time.sleep(0.5)
+    dash._on_button_down()
+    time.sleep(0.1)
+    dash._on_button_up()
+    assert calls == []  # still no toggle (outside window)
+
+
+def test_single_press_still_triggers_ptt(monkeypatch):
+    """Single press should still trigger PTT callback (not toggle)."""
+    _set_defaults(monkeypatch)
+    ptt_calls = []
+    dash = _WhisplayDashboard(on_push_to_talk=lambda: ptt_calls.append(1))
+    dash._btn_was_down = False
+
+    # Simulate single press via poll button (edge detection)
+    class FakeClient:
+        def __init__(self):
+            self._count = 0
+
+        def led(self, r, g, b):
+            pass
+
+        def button_pressed(self):
+            self._count += 1
+            # Return True once, then False
+            return self._count == 1
+
+    dash._mode = "daemon"
+    dash._client = FakeClient()
+    dash._poll_button()
+    assert ptt_calls == [1]

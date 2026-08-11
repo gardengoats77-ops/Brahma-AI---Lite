@@ -256,7 +256,7 @@ class WhisplayDashboard:
     """Background thread driving the Whisplay TFT + PTT through the daemon."""
 
     def __init__(self, on_push_to_talk: Optional[Callable[[], None]] = None,
-                 poll: float = 2.0):
+                 poll: float = 2.0, wake_listener=None):
         self._on_ptt = on_push_to_talk
         self._poll = poll
         self._voice_state = "IDLE"
@@ -267,6 +267,12 @@ class WhisplayDashboard:
         self._client: Optional[_DaemonClient] = None
         self._board: Optional[WhisplayBoard] = None
         self._btn_was_down = False
+        self._wake_listener = wake_listener  # WakeWordListener or None
+
+        # Double-press detection: timestamps of recent presses
+        self._press_times: list[float] = []
+        self._double_press_window = 0.5  # seconds
+        self._toggle_flash_until = 0.0  # amber flash end time
 
         # Preferred: daemon socket (matches the working Pi architecture).
         client = _DaemonClient()
@@ -350,6 +356,50 @@ class WhisplayDashboard:
             except Exception as e:  # noqa: BLE001
                 log.warning("PTT callback error: %s", e)
 
+    def _on_button_down(self):
+        """Record a button-down event for double-press detection.
+
+        Every rising edge triggers PTT (single-press behavior). If a
+        second press occurs within the window, the wake-word listener
+        is toggled instead.
+        """
+        # Always trigger PTT on button down
+        self._ptt_pressed()
+
+        now = time.monotonic()
+        self._press_times.append(now)
+        # Prune entries older than the window
+        cutoff = now - self._double_press_window
+        self._press_times = [t for t in self._press_times if t >= cutoff]
+        if len(self._press_times) >= 2:
+            # Double-press detected — toggle wake word and flash LED
+            self._press_times.clear()
+            self._toggle_wake_word()
+
+    def _on_button_up(self):
+        """Button release — no action needed (edge is detected on down)."""
+        pass
+
+    def _toggle_wake_word(self):
+        """Toggle the wake-word listener and flash amber LED for feedback."""
+        if self._wake_listener is not None and hasattr(self._wake_listener, 'set_enabled'):
+            new_state = not self._wake_listener.enabled
+            self._wake_listener.set_enabled(new_state)
+            log.info("Wake word toggled %s via double-press", "ON" if new_state else "OFF")
+            # Flash amber LED for feedback (0.5s)
+            self._toggle_flash_until = time.monotonic() + 0.5
+            self._flash_led_amber()
+
+    def _flash_led_amber(self):
+        """Flash amber LED briefly for toggle feedback."""
+        try:
+            if self._mode == "daemon" and self._client is not None:
+                self._client.led(255, 170, 0)  # amber
+            elif self._mode == "direct" and self._board is not None:
+                self._board.set_rgb(255, 170, 0)
+        except Exception:  # noqa: BLE001
+            pass
+
     def _loop(self):
         while self._running:
             try:
@@ -361,14 +411,22 @@ class WhisplayDashboard:
 
     def _poll_button(self):
         """Debounced PTT edge detection for daemon mode (button owned by
-        the daemon; we read state over its socket)."""
+        the daemon; we read state over its socket).
+
+        Integrates with double-press detection: a rising edge calls
+        _on_button_down(), a falling edge calls _on_button_up(). A single
+        press triggers PTT; a double-press within the window toggles the
+        wake-word listener.
+        """
         if self._on_ptt is None or self._mode != "daemon" or \
                 self._client is None:
             return
         try:
             down = self._client.button_pressed()
             if down and not self._btn_was_down:
-                self._ptt_pressed()
+                self._on_button_down()
+            elif not down and self._btn_was_down:
+                self._on_button_up()
             self._btn_was_down = down
         except Exception:  # noqa: BLE001
             pass
@@ -422,9 +480,12 @@ class WhisplayDashboard:
 _dash_singleton: Optional[WhisplayDashboard] = None
 
 
-def get_dashboard(on_push_to_talk=None) -> WhisplayDashboard:
+def get_dashboard(on_push_to_talk=None, wake_listener=None) -> WhisplayDashboard:
     """Return a process-wide singleton WhisplayDashboard."""
     global _dash_singleton
     if _dash_singleton is None:
-        _dash_singleton = WhisplayDashboard(on_push_to_talk=on_push_to_talk)
+        _dash_singleton = WhisplayDashboard(
+            on_push_to_talk=on_push_to_talk,
+            wake_listener=wake_listener,
+        )
     return _dash_singleton
