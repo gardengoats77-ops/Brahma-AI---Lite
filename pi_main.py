@@ -75,6 +75,7 @@ VOSK_MODEL_DIR = os.environ.get(
 # _wakeword_ref is populated by _voice_loop() after the Vosk listener boots,
 # so _remote_execute can adjust sensitivity live without reopening audio.
 _wakeword_ref: "dict[str, WakeWordListener | None]" = {"listener": None}
+_tts_ref: "dict[str, object | None]" = {"tts": None}
 
 
 def _remote_tool_declarations() -> list[dict]:
@@ -338,6 +339,11 @@ async def _voice_loop(
         log.warning("Wake word unavailable: %s — using push-to-talk", e)
         wakeword = None
 
+    # ── Initialize TTS for voice confirmations ──────────────────────────
+    from pi.tts import get_tts
+    _tts_ref["tts"] = get_tts()
+    log.info("VoiceConfirm TTS initialized (enabled=%s)", getattr(_tts_ref["tts"], "enabled", False))
+
     # ── Start Whisplay dashboard (wired to wake word for double-press toggle)
     dash = get_dashboard(
         on_push_to_talk=lambda: log.info("PTT pressed"),
@@ -490,7 +496,7 @@ async def _run_live_session(
                         for fc in response.tool_call.function_calls:
                             log.info("Remote tool call: %s", fc.name)
                             try:
-                                fr = await _remote_execute(fc)
+                                fr = await _remote_execute(fc, tts=_tts_ref.get("tts"))
                                 fn_responses.append(
                                     types.FunctionResponse(
                                         id=fc.id, name=fc.name, response=fr
