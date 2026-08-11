@@ -40,6 +40,7 @@ from pi.whisplay_audio import WhisplayAudio, discover_whisplay_devices
 from pi.whisplay_display import WhisplayDisplay
 from pi.whisplay_dashboard import get_dashboard
 from pi.hailo_engine import HailoEngine
+from pi.gesture_control import GestureController
 from pi import dispatch_memory
 from pi import memory as conversation_memory
 
@@ -540,6 +541,56 @@ def _boot_npu() -> Optional[HailoEngine]:
     return eng
 
 
+def _boot_gesture(npu: Optional[HailoEngine]) -> Optional[GestureController]:
+    """Initialize the gesture controller using the NPU for pose detection.
+
+    The gesture controller fires voice-command callbacks when a wave,
+    thumbs-up, or stop gesture is detected. Gracefully degrades when
+    no NPU is available.
+    """
+    ctrl = GestureController(
+        engine=npu,
+        on_wave=_on_gesture_wave,
+        on_thumbs_up=_on_gesture_thumbs_up,
+        on_stop=_on_gesture_stop,
+    )
+    if ctrl.available:
+        log.info("Gesture controller armed (Hailo NPU + yolov8s_pose)")
+    else:
+        log.info("Gesture controller disabled (no NPU available)")
+    return ctrl
+
+
+def _on_gesture_wave(gesture_name: str) -> None:
+    """Voice callback: wave detected — trigger voice command."""
+    log.info("Gesture detected: %s — triggering voice command", gesture_name)
+    # Voice confirmation via TTS
+    tts = _tts_ref.get("tts")
+    if tts:
+        tts.speak("Wave detected, Rex here!")
+    # Set wake flag so the voice loop handles this as a wake event
+    # This simulates a voice wake without saying "Hey Rex"
+    wakeword_ref = _wakeword_ref.get("listener")
+    if wakeword_ref and hasattr(wakeword_ref, 'trigger'):
+        wakeword_ref.trigger()
+
+
+def _on_gesture_thumbs_up(gesture_name: str) -> None:
+    """Voice callback: thumbs-up detected — acknowledge."""
+    log.info("Gesture detected: %s — acknowledging", gesture_name)
+    tts = _tts_ref.get("tts")
+    if tts:
+        tts.speak("Thumbs up! Got it.")
+
+
+def _on_gesture_stop(gesture_name: str) -> None:
+    """Voice callback: stop detected — cancel current action."""
+    log.info("Gesture detected: %s — cancelling action", gesture_name)
+    tts = _tts_ref.get("tts")
+    if tts:
+        tts.speak("Stopping.")
+
+
 def _load_api_key() -> str:
     """Read the Gemini API key from the config file."""
     cfg = Path(__file__).resolve().parent / "config" / "api_keys.json"
@@ -560,6 +611,7 @@ async def _voice_loop(
     audio: Optional[WhisplayAudio],
     display: WhisplayDisplay,
     npu: Optional[HailoEngine],
+    gesture: Optional[GestureController] = None,
 ) -> None:
     """Wake-word -> Gemini Live -> TTS loop using Whisplay HAT hardware.
 
@@ -625,6 +677,15 @@ async def _voice_loop(
         dash.set_muted(True)
     log.info("Whisplay dashboard started (available=%s)", dash.available)
 
+    # ── Initialize Vosk STT fallback (Gemini unreachable -> offline STT) ─
+    from pi.vosk_stt import VoskSTT
+
+    vosk_stt = VoskSTT(model_dir=VOSK_MODEL_DIR)
+    if vosk_stt.available:
+        log.info("Vosk STT fallback armed for offline speech recognition")
+    else:
+        log.info("Vosk STT fallback unavailable — Gemini-only mode")
+
     # ── Main loop: wake -> Live session -> idle -> re-arm ────────────────
     while True:
         # Wait for wake word (or timeout -> push-to-talk mode)
@@ -648,15 +709,38 @@ async def _voice_loop(
             display.update("Recording...", "push-to-talk")
             await asyncio.sleep(5)
 
-        # ── Wake triggered — open Gemini Live session ───────────────────
-        log.info("Wake detected — opening Gemini Live session")
+        # ── Wake triggered — probe Gemini, fall back to STT if needed ──
+        log.info("Wake detected — connecting to Gemini Live")
         display.update("Connecting...", "wake")
 
+        gemini_reachable = False
         try:
-            await _run_live_session(audio, display, npu)
+            gemini_reachable = await _probe_gemini_live()
         except Exception as e:
-            log.error("Live session error: %s", e)
-            display.update(f"Error: {str(e)[:40]}", "error")
+            log.debug("Gemini probe failed: %s", e)
+
+        if gemini_reachable:
+            # Gemini is reachable — run the full Live session
+            try:
+                await _run_live_session(audio, display, npu)
+            except Exception as e:
+                log.error("Live session error: %s", e)
+                display.update(f"Error: {str(e)[:40]}", "error")
+                await asyncio.sleep(3)
+        elif vosk_stt.available:
+            # Gemini unreachable — fall back to offline Vosk STT
+            log.warning("Gemini Live unreachable — swapping to Vosk STT fallback")
+            display.update("Offline mode", "listening")
+            try:
+                await _run_offline_stt_session(audio, display, vosk_stt)
+            except Exception as e:
+                log.error("Offline STT session error: %s", e)
+                display.update(f"STT error: {str(e)[:40]}", "error")
+                await asyncio.sleep(3)
+        else:
+            # Neither Gemini nor Vosk STT available
+            log.error("Gemini unreachable and Vosk STT unavailable")
+            display.update("No Gemini, no STT", "error")
             await asyncio.sleep(3)
 
         # Re-arm for next cycle
@@ -832,6 +916,77 @@ async def _run_live_session(
         display.update("Session done", "idle")
 
 
+async def _probe_gemini_live() -> bool:
+    """Check if Gemini Live is reachable without starting a full session.
+
+    Attempts a quick HTTP HEAD to the Gemini API endpoint. Returns True
+    if the service is reachable, False otherwise.
+    """
+    import aiohttp
+
+    try:
+        url = "https://generativelanguage.googleapis.com/"
+        timeout = aiohttp.ClientTimeout(total=5)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.head(url) as resp:
+                # Any response (even 404) means the service is reachable
+                return resp.status < 500
+    except Exception as exc:
+        log.debug("Gemini probe failed: %s", exc)
+        return False
+
+
+async def _run_offline_stt_session(
+    audio: WhisplayAudio,
+    display: WhisplayDisplay,
+    stt: "VoskSTT",
+) -> None:
+    """Run an offline STT session when Gemini Live is unreachable.
+
+    Records audio from the HAT mic, feeds it to the Vosk recognizer,
+    and displays partial + final transcripts on the Whisplay. Final
+    transcripts are logged and stored in conversation memory.
+    """
+    log.info("Starting offline Vosk STT session")
+    display.update("Offline STT", "listening")
+
+    stt.start()
+    idle_timer = time.monotonic()
+    IDLE_TIMEOUT = 30.0  # seconds of silence before closing session
+
+    try:
+        while True:
+            try:
+                chunk = audio.record_chunk(duration_s=0.5)
+                data = chunk.tobytes() if hasattr(chunk, "tobytes") else bytes(chunk)
+                result = stt.feed(data)
+                if result:
+                    idle_timer = time.monotonic()
+                    if result["type"] == "partial":
+                        display.update(result["text"][:60], "listening")
+                    elif result["type"] == "final":
+                        text = result["text"]
+                        log.info("Offline STT: %s", text)
+                        display.update(text[:60], "heard")
+                        conversation_memory.append_exchange("user", text)
+                        # Re-arm for next utterance
+                        stt.start()
+                # Check for idle timeout
+                elapsed = time.monotonic() - idle_timer
+                if elapsed > IDLE_TIMEOUT:
+                    log.info("Offline STT idle timeout (%.0fs)", elapsed)
+                    display.update("Session idle", "timeout")
+                    break
+                await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.debug("Offline STT loop err: %s", e)
+                await asyncio.sleep(0.1)
+    finally:
+        stt.stop()
+
+
 def main() -> int:
     """Boot the Brahma AI Lite headless voice loop."""
     logging.basicConfig(
@@ -842,6 +997,7 @@ def main() -> int:
 
     audio, display = _boot_hardware()
     npu = _boot_npu()
+    gesture = _boot_gesture(npu)
 
     log.info("BootState=%s", BootState.as_dict())
 
@@ -863,7 +1019,7 @@ def main() -> int:
     signal.signal(signal.SIGINT, _shutdown)
 
     try:
-        asyncio.run(_voice_loop(audio, display, npu))
+        asyncio.run(_voice_loop(audio, display, npu, gesture))
     except KeyboardInterrupt:
         log.info("Shutdown requested")
         display.clear()
