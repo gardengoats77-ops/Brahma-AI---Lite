@@ -322,6 +322,13 @@ _BRAIN_TOKEN_CACHE: Optional[str] = None
 _BRAIN_TOKEN_TTL = 300  # 5 min cache — token rarely rotates
 _BRAIN_TOKEN_TS = 0.0
 
+# ── Ollama local fallback ───────────────────────────────────────────────────
+# When the cloud Gemini / brain dispatch endpoint is unreachable (offline,
+# network partition, token expired), route the prompt to a local Ollama
+# instance running on the desktop. This is the offline resilience layer.
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://100.97.24.91:11434")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
+
 
 def _brain_token() -> str:
     """Fetch the brain API token over SSH from the desktop's running process."""
@@ -372,13 +379,18 @@ def dispatch(prompt: str, timeout: float = 30.0) -> Dict[str, Any]:
     Returns the dispatch response (task_id, assigned_agent, status) or
     an error dict. The prompt goes to the 45-agent router which picks the
     right specialist and runs it.
+
+    Fallback chain:
+        1. Brain dispatch (cloud Gemini via REX-OMEGA on desktop)
+        2. Ollama local LLM (on desktop at OLLAMA_HOST)
+        3. Error response
     """
     import urllib.request
     import urllib.error
 
     token = _brain_token()
     if not token:
-        return {"ok": False, "error": "could not fetch brain token over SSH"}
+        return _dispatch_ollama(prompt, timeout, reason="could not fetch brain token over SSH")
 
     body = json.dumps({"prompt": prompt}).encode()
     req = urllib.request.Request(
@@ -395,9 +407,56 @@ def dispatch(prompt: str, timeout: float = 30.0) -> Dict[str, Any]:
             data = json.loads(resp.read().decode())
             return {"ok": True, **data}
     except urllib.error.HTTPError as e:
+        # HTTP errors (4xx, 5xx) — brain is reachable but rejected request
         return {"ok": False, "error": f"HTTP {e.code}", "detail": e.read().decode()[:500]}
+    except urllib.error.URLError as e:
+        # Connection error — brain is unreachable, try Ollama fallback
+        return _dispatch_ollama(prompt, timeout, reason=str(e))
     except Exception as e:  # noqa: BLE001
-        return {"ok": False, "error": str(e)}
+        # Other errors (socket.timeout, ConnectionRefusedError, etc.)
+        return _dispatch_ollama(prompt, timeout, reason=str(e))
+
+
+def _dispatch_ollama(prompt: str, timeout: float, reason: str) -> Dict[str, Any]:
+    """Fallback: route the prompt to local Ollama.
+
+    Called when brain dispatch fails with a connection error.
+    Returns Ollama's response or an error dict if Ollama is also unreachable.
+    """
+    import urllib.request
+    import urllib.error
+
+    body = json.dumps({
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False,
+    }).encode()
+    req = urllib.request.Request(
+        f"{OLLAMA_HOST.rstrip('/')}/api/generate",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            return {
+                "ok": True,
+                "result": data.get("response", ""),
+                "model": data.get("model", OLLAMA_MODEL),
+                "fallback": "ollama",
+                "brain_error": reason,
+            }
+    except urllib.error.URLError as e:
+        return {
+            "ok": False,
+            "error": f"brain and ollama both unreachable: brain={reason}, ollama={e}",
+        }
+    except Exception as e:  # noqa: BLE001
+        return {
+            "ok": False,
+            "error": f"brain and ollama both unreachable: brain={reason}, ollama={e}",
+        }
 
 
 def list_agents(timeout: float = 10.0) -> Dict[str, Any]:

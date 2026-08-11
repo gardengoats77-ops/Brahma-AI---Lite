@@ -503,4 +503,67 @@ def test_dispatch_stream_fallback_on_error(monkeypatch):
     assert result.get("result") == "Fleet is online"
 
 
+def test_ollama_fallback(monkeypatch):
+    """When brain dispatch fails with a connection error, dispatch() should
+    fall back to local Ollama endpoint and return its response."""
+    import urllib.error
+    import urllib.request
+
+    # Brain token available so we get past the token check
+    monkeypatch.setattr(rc, "_brain_token", lambda: "fake-token")
+
+    # Override Ollama env (read at import time — patch module attrs directly)
+    monkeypatch.setattr(rc, "OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setattr(rc, "OLLAMA_MODEL", "llama3.2")
+
+    def fake_urlopen(req, timeout=None):
+        url = req.get_full_url()
+        # Brain URL — simulate connection failure
+        if ":8788" in url:
+            raise urllib.error.URLError("Connection refused")
+        # Ollama URL — return mock response
+        if ":11434" in url or "ollama" in url.lower():
+            class FakeResp:
+                def read(self):
+                    return json.dumps({
+                        "model": "llama3.2",
+                        "response": "Fallback from Ollama: fleet nominal",
+                        "done": True,
+                    }).encode()
+                def __enter__(self):
+                    return self
+                def __exit__(self, *a):
+                    pass
+            return FakeResp()
+        raise urllib.error.URLError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = rc.dispatch("check fleet")
+    assert result["ok"] is True
+    assert result.get("result") == "Fallback from Ollama: fleet nominal"
+    assert result.get("fallback") == "ollama"
+    assert result.get("model") == "llama3.2"
+
+
+def test_ollama_fallback_also_fails(monkeypatch):
+    """When BOTH brain and Ollama are unreachable, dispatch() should return
+    an error dict (not crash)."""
+    import urllib.error
+    import urllib.request
+
+    monkeypatch.setattr(rc, "_brain_token", lambda: "fake-token")
+    monkeypatch.setattr(rc, "OLLAMA_HOST", "http://localhost:11434")
+    monkeypatch.setattr(rc, "OLLAMA_MODEL", "llama3.2")
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.URLError("Connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = rc.dispatch("check fleet")
+    assert result["ok"] is False
+    assert "ollama" in result.get("error", "").lower()
+
+
 import io  # noqa: E402 — used in test_dispatch_stream_fallback_on_error
