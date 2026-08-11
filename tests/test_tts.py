@@ -23,7 +23,10 @@ def test_voice_confirmation_on_dispatch():
     fc.name = "brain_dispatch"
     fc.args = {"prompt": "research quantum computing"}
 
-    with patch("pi.remote_control") as mock_rc:
+    with patch("pi.remote_control") as mock_rc, \
+         patch("pi_main._response_cache") as mock_cache:
+        # Mock cache miss so we exercise the streaming path
+        mock_cache.get.return_value = None
         # Mock the streaming path: dispatch_stream yields deltas, accumulate_and_speak
         # splits them into sentences for TTS.
         mock_rc.dispatch_stream = MagicMock(
