@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Brahma AI Lite — Mobile Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+        body {
+            background: #050608;
+            color: #f2f4f7;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            -webkit-font-smoothing: antialiased;
+        }
+        .htmx-indicator { display: none; }
+        .htmx-request .htmx-indicator { display: inline; }
+        .glass {
+            background: rgba(255, 255, 255, 0.04);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .pulse-dot {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse {
+            50% { opacity: 0.5; }
+        }
+        .status-online { color: #4ade80; }
+        .status-degraded { color: #fbbf24; }
+        .status-offline { color: #f87171; }
+        /* Mobile-first responsive */
+        @media (min-width: 768px) {
+            .desktop-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        @media (min-width: 1024px) {
+            .desktop-grid { grid-template-columns: repeat(3, 1fr); }
+        }
+    </style>
+</head>
+<body class="min-h-screen pb-24">
+    <div x-data="dashboardApp()" x-init="init()">
+        <!-- Header -->
+        <header class="sticky top-0 z-50 glass px-4 py-3">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                    <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center text-xs font-bold">B</div>
+                    <span class="text-sm font-semibold tracking-wide">Brahma AI Lite</span>
+                </div>
+                <div class="flex items-center gap-2 text-xs">
+                    <span class="w-2 h-2 rounded-full"
+                          :class="{
+                              'bg-green-400 pulse-dot': state.status === 'online',
+                              'bg-yellow-400': state.status === 'degraded',
+                              'bg-red-400': state.status === 'offline'
+                          }"></span>
+                    <span x-text="state.status" class="capitalize"></span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="px-4 py-4 space-y-4">
+
+            <!-- STATUS TAB -->
+            <template x-if="active_tab === 'status'">
+                <div class="space-y-4">
+                    <!-- Hardware Status -->
+                    <section class="glass rounded-2xl p-4">
+                        <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">Hardware</h2>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div class="flex items-center gap-2 text-sm">
+                                <span :class="state.mic_available ? 'status-online' : 'status-offline'">
+                                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M7 4a3 3 0 016 0v6a3 3 0 11-6 0V4z"/><path d="M5.5 9.5A.5.5 0 016 10v.5a4 4 0 008 0V10a.5.5 0 011 0v.5a5 5 0 01-4.5 4.975V17h2a.5.5 0 010 1H7a.5.5 0 010-1h2v-1.525A5 5 0 016 10.5V10a.5.5 0 01.5-.5z"/></svg>
+                                </span>
+                                <span>Mic</span>
+                            </div>
+                            <div class="flex items-center gap-2 text-sm">
+                                <span :class="state.speaker_available ? 'status-online' : 'status-offline'">
+                                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.617.787L4.586 14H2a1 1 0 01-1-1V7a1 1 0 011-1h2.586l3.797-3.125a1 1 0 011-.8zM14.657 2.929a1 1 0 011.414 0A9.972 9.972 0 0119 10a9.972 9.972 0 01-2.929 7.071 1 1 0 11-1.414-1.414A7.971 7.971 0 0017 10c0-2.21-.894-4.208-2.343-5.657a1 1 0 010-1.414zm-2.829 2.828a1 1 0 011.415 0A5.983 5.983 0 0115 10a5.984 5.984 0 01-1.757 4.243 1 1 0 01-1.415-1.415A3.984 3.984 0 0013 10a3.983 3.983 0 00-1.172-2.828 1 1 0 010-1.415z"/></svg>
+                                </span>
+                                <span>Speaker</span>
+                            </div>
+                            <div class="flex items-center gap-2 text-sm">
+                                <span :class="state.display_available ? 'status-online' : 'status-offline'">
+                                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M3 5a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2h-2.22l.123.489.804.804A1 1 0 0113 18H7a1 1 0 01-.707-1.707l.804-.804L7.22 15H5a2 2 0 01-2-2V5zm5.771 7H5V5h10v7H8.771z"/></svg>
+                                </span>
+                                <span>Display</span>
+                            </div>
+                            <div class="flex items-center gap-2 text-sm">
+                                <span :class="state.hailo_available ? 'status-online' : 'status-offline'">
+                                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M11 17a1 1 0 001.447.894l4-2A1 1 0 0017 15V9.236a1 1 0 00-1.447-.894l-4 2a1 1 0 00-.553.894V17zM15.211 6.276a1 1 0 000-1.788l-4.764-2.382a1 1 0 00-.894 0L4.789 4.488a1 1 0 000 1.788l4.764 2.382a1 1 0 00.894 0l4.764-2.382zM4.447 8.342A1 1 0 003 9.236V15a1 1 0 00.553.894l4 2A1 1 0 009 17v-5.764a1 1 0 00-.553-.894l-4-2z"/></svg>
+                                </span>
+                                <span>Hailo NPU</span>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- Voice State -->
+                    <section class="glass rounded-2xl p-4">
+                        <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">Voice State</h2>
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center gap-3">
+                                <div class="w-10 h-10 rounded-full flex items-center justify-center"
+                                     :class="{
+                                         'bg-green-500/20 text-green-400': state.voice_state === 'LISTENING',
+                                         'bg-blue-500/20 text-blue-400': state.voice_state === 'SPEAKING',
+                                         'bg-yellow-500/20 text-yellow-400': state.voice_state === 'WAKE',
+                                         'bg-gray-500/20 text-gray-400': state.voice_state === 'IDLE'
+                                     }">
+                                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7 4a3 3 0 016 0v6a3 3 0 11-6 0V4z M10 18a8 8 0 008-8h-2a6 6 0 11-12 0H2a8 8 0 008 8z"/></svg>
+                                </div>
+                                <div>
+                                    <p class="text-sm font-medium" x-text="state.voice_state"></p>
+                                    <p class="text-xs text-gray-500" x-text="state.last_wake ? 'Last wake: ' + state.last_wake : 'No wake detected'"></p>
+                                </div>
+                            </div>
+                            <button class="px-3 py-1.5 bg-orange-500/20 text-orange-400 text-xs font-medium rounded-full border border-orange-500/30"
+                                    onclick="new AudioContext().resume()">🔊 Test</button>
+                        </div>
+                    </section>
+
+                    <!-- Quick Fleet Overview -->
+                    <section class="glass rounded-2xl p-4">
+                        <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">Fleet Overview</h2>
+                        <div class="space-y-2">
+                            <template x-for="device in state.fleet_devices" :key="device.name">
+                                <div class="flex items-center justify-between py-2 border-b border-white/5 last:border-0">
+                                    <div class="flex items-center gap-2">
+                                        <span class="w-2 h-2 rounded-full" :class="device.reachable ? 'bg-green-400' : 'bg-red-400'"></span>
+                                        <span class="text-sm" x-text="device.name"></span>
+                                        <span class="text-xs text-gray-500" x-text="device.type"></span>
+                                    </div>
+                                    <span class="text-xs" :class="device.reachable ? 'status-online' : 'status-offline'" x-text="device.reachable ? 'Online' : 'Offline'"></span>
+                                </div>
+                            </template>
+                        </div>
+                    </section>
+                </div>
+            </template>
+
+            <!-- DISPATCH TAB -->
+            <template x-if="active_tab === 'dispatch'">
+                <div class="space-y-4">
+                    <section class="glass rounded-2xl p-4">
+                        <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">One-Tap Dispatch</h2>
+                        <form @submit.prevent="submitDispatch" class="space-y-3">
+                            <textarea
+                                x-model="dispatchPrompt"
+                                placeholder="Enter command to dispatch to REX brain..."
+                                class="w-full p-3 bg-white/5 border border-white/10 rounded-xl text-sm placeholder-gray-500 focus:outline-none focus:border-orange-500/50 resize-none"
+                                rows="3"></textarea>
+                            <div class="flex gap-2">
+                                <button type="submit"
+                                        :disabled="!dispatchPrompt.trim() || dispatchLoading"
+                                        class="flex-1 py-3 bg-gradient-to-r from-orange-500 to-red-600 text-white font-semibold text-sm rounded-xl disabled:opacity-50 disabled:cursor-not-allowed">
+                                    <span x-show="!dispatchLoading">⚡ Dispatch</span>
+                                    <span x-show="dispatchLoading" class="htmx-indicator">Sending...</span>
+                                </button>
+                                <button type="button"
+                                        @click="dispatchPrompt = ''"
+                                        class="px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-sm">
+                                    Clear
+                                </button>
+                            </div>
+                        </form>
+                        <!-- Quick commands -->
+                        <div class="mt-4 flex flex-wrap gap-2">
+                            <button @click="dispatchPrompt='Check system status'" class="px-3 py-1.5 bg-white/5 border border-white/10 rounded-full text-xs">Status</button>
+                            <button @click="dispatchPrompt='What can you do?'" class="px-3 py-1.5 bg-white/5 border border-white/10 rounded-full text-xs">Capabilities</button>
+                            <button @click="dispatchPrompt='List all reminders'" class="px-3 py-1.5 bg-white/5 border border-white/10 rounded-full text-xs">Reminders</button>
+                        </div>
+                    </section>
+
+                    <!-- Dispatch History -->
+                    <section class="glass rounded-2xl p-4">
+                        <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">History</h2>
+                        <div class="space-y-2 max-h-64 overflow-y-auto">
+                            <template x-if="state.dispatch_history.length === 0">
+                                <p class="text-sm text-gray-500 text-center py-4">No dispatch history yet</p>
+                            </template>
+                            <template x-for="entry in state.dispatch_history" :key="entry.task_id">
+                                <div class="p-3 bg-white/5 rounded-xl border border-white/5">
+                                    <div class="flex items-center justify-between mb-1">
+                                        <span class="text-xs font-mono text-gray-500" x-text="entry.task_id"></span>
+                                        <span class="text-xs px-2 py-0.5 rounded-full"
+                                              :class="{
+                                                  'bg-green-500/20 text-green-400': entry.status === 'completed',
+                                                  'bg-yellow-500/20 text-yellow-400': entry.status === 'queued' || entry.status === 'running',
+                                                  'bg-red-500/20 text-red-400': entry.status === 'failed'
+                                              }"
+                                              x-text="entry.status"></span>
+                                    </div>
+                                    <p class="text-sm" x-text="entry.prompt"></p>
+                                    <p class="text-xs text-gray-500 mt-1" x-text="entry.timestamp"></p>
+                                </div>
+                            </template>
+                        </div>
+                    </section>
+                </div>
+            </template>
+
+            <!-- FLEET TAB -->
+            <template x-if="active_tab === 'fleet'">
+                <div class="space-y-4">
+                    <section class="glass rounded-2xl p-4">
+                        <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">Devices</h2>
+                        <div class="grid gap-3 desktop-grid">
+                            <template x-for="device in state.fleet_devices" :key="device.name">
+                                <div class="p-4 bg-white/5 rounded-xl border border-white/5">
+                                    <div class="flex items-center justify-between mb-3">
+                                        <div class="flex items-center gap-2">
+                                            <span class="w-3 h-3 rounded-full" :class="device.reachable ? 'bg-green-400' : 'bg-red-400'"></span>
+                                            <span class="text-sm font-medium capitalize" x-text="device.name"></span>
+                                        </div>
+                                        <span class="text-xs px-2 py-1 rounded-full bg-white/5" x-text="device.type"></span>
+                                    </div>
+                                    <p class="text-xs text-gray-500 mb-3" x-text="device.ip || 'IP unknown'"></p>
+                                    <div class="flex gap-2">
+                                        <button class="flex-1 py-1.5 bg-blue-500/20 text-blue-400 text-xs rounded-lg border border-blue-500/30">Ping</button>
+                                        <button class="flex-1 py-1.5 bg-orange-500/20 text-orange-400 text-xs rounded-lg border border-orange-500/30">Connect</button>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </section>
+                </div>
+            </template>
+
+            <!-- VOICE TAB -->
+            <template x-if="active_tab === 'voice'">
+                <div class="space-y-4">
+                    <section class="glass rounded-2xl p-4">
+                        <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">Voice Log</h2>
+                        <div class="space-y-2 max-h-96 overflow-y-auto">
+                            <template x-if="state.voice_log.length === 0">
+                                <p class="text-sm text-gray-500 text-center py-4">No voice interactions yet</p>
+                            </template>
+                            <template x-for="(entry, idx) in state.voice_log" :key="idx">
+                                <div class="p-3 bg-white/5 rounded-xl border border-white/5">
+                                    <div class="flex items-center gap-2 mb-1">
+                                        <span class="text-xs px-2 py-0.5 rounded-full"
+                                              :class="entry.role === 'user' ? 'bg-blue-500/20 text-blue-400' : 'bg-orange-500/20 text-orange-400'"
+                                              x-text="entry.role"></span>
+                                        <span class="text-xs text-gray-500" x-text="entry.timestamp || ''"></span>
+                                    </div>
+                                    <p class="text-sm" x-text="entry.text"></p>
+                                </div>
+                            </template>
+                        </div>
+                    </section>
+                </div>
+            </template>
+
+        </main>
+
+        <!-- Bottom Navigation -->
+        <nav class="fixed bottom-0 left-0 right-0 glass border-t border-white/10 px-4 py-2 safe-area-inset-bottom">
+            <div class="flex items-center justify-around">
+                <button @click="active_tab = 'status'"
+                        :class="active_tab === 'status' ? 'text-orange-400' : 'text-gray-500'"
+                        class="flex flex-col items-center gap-1 py-2 px-3">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg>
+                    <span class="text-xs">Status</span>
+                </button>
+                <button @click="active_tab = 'dispatch'"
+                        :class="active_tab === 'dispatch' ? 'text-orange-400' : 'text-gray-500'"
+                        class="flex flex-col items-center gap-1 py-2 px-3">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z"/></svg>
+                    <span class="text-xs">Dispatch</span>
+                </button>
+                <button @click="active_tab = 'fleet'"
+                        :class="active_tab === 'fleet' ? 'text-orange-400' : 'text-gray-500'"
+                        class="flex flex-col items-center gap-1 py-2 px-3">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path d="M5 3a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2V5a2 2 0 00-2-2H5zM5 11a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2v-2a2 2 0 00-2-2H5zM11 5a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V5zM11 13a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
+                    <span class="text-xs">Fleet</span>
+                </button>
+                <button @click="active_tab = 'voice'"
+                        :class="active_tab === 'voice' ? 'text-orange-400' : 'text-gray-500'"
+                        class="flex flex-col items-center gap-1 py-2 px-3">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7 4a3 3 0 016 0v6a3 3 0 11-6 0V4z"/></svg>
+                    <span class="text-xs">Voice</span>
+                </button>
+            </div>
+        </nav>
+    </div>
+
+    <script>
+        function dashboardApp() {
+            return {
+                state: {{ state | tojson }},
+                active_tab: '{{ active_tab }}',
+                dispatchPrompt: '',
+                dispatchLoading: false,
+
+                init() {
+                    // Poll for health updates every 10s
+                    setInterval(() => this.fetchHealth(), 10000);
+                },
+
+                async fetchHealth() {
+                    try {
+                        const r = await fetch('/api/health');
+                        if (r.ok) {
+                            const data = await r.json();
+                            this.state = { ...this.state, ...data };
+                        }
+                    } catch (e) { /* silent */ }
+                },
+
+                async submitDispatch() {
+                    if (!this.dispatchPrompt.trim()) return;
+                    this.dispatchLoading = true;
+                    try {
+                        const r = await fetch('/api/dispatch', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ prompt: this.dispatchPrompt })
+                        });
+                        if (r.ok) {
+                            const data = await r.json();
+                            if (data.entry) {
+                                this.state.dispatch_history.unshift(data.entry);
+                            }
+                            this.dispatchPrompt = '';
+                        }
+                    } catch (e) {
+                        console.error('Dispatch failed:', e);
+                    } finally {
+                        this.dispatchLoading = false;
+                    }
+                }
+            };
+        }
+    </script>
+</body>
+</html>

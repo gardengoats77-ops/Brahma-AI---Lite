@@ -845,30 +845,13 @@ def main() -> int:
 
     log.info("BootState=%s", BootState.as_dict())
 
-    # Start the existing dashboard FastAPI in a background thread so
-    # mobile devices on Tailscale can reach /api/health.
-    # Uses uvicorn directly — dashboard.server may not have a helper.
+    # Start the mobile FastAPI HTMX dashboard in a background thread.
     if os.environ.get("BRAHMA_PI_DASHBOARD") != "0":
         try:
-            import threading
-            import uvicorn
-
-            def _run_dashboard():
-                try:
-                    uvicorn.run(
-                        "dashboard.server:app",
-                        host="0.0.0.0",
-                        port=8000,
-                        log_level="warning",
-                    )
-                except Exception as e:  # noqa: BLE001
-                    log.warning("Dashboard thread failed: %s", e)
-
-            t = threading.Thread(target=_run_dashboard, daemon=True)
-            t.start()
-            log.info("Dashboard FastAPI started in background on :8000")
+            from dashboard.mobile import start_dashboard
+            start_dashboard(host="0.0.0.0", port=8000)
         except Exception as e:  # noqa: BLE001
-            log.warning("Dashboard start failed: %s", e)
+            log.warning("Mobile dashboard start failed: %s", e)
 
     # Graceful shutdown
     def _shutdown(signum, frame):
