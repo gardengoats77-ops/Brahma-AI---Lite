@@ -45,6 +45,7 @@ from pi import dispatch_memory
 from pi import memory as conversation_memory
 from pi.error_recovery import with_error_recovery, CircuitBreaker
 from pi.power_mgmt import PowerManager
+from pi.response_cache import ResponseCache
 
 if TYPE_CHECKING:
     from wake_word import WakeWordListener
@@ -89,6 +90,9 @@ _tts_circuit = CircuitBreaker(failure_threshold=5, cooldown=10.0)
 
 # Power manager for battery-powered operation (Phase 11.2: Power Management)
 _power_manager: Optional[PowerManager] = None
+
+# Response cache for offline operation (Phase 10.2: Response Caching)
+_response_cache = ResponseCache()
 
 
 def _remote_tool_declarations() -> list[dict]:
@@ -340,6 +344,11 @@ async def _remote_execute(fc, tts=None) -> dict:
         prompt = args.get("prompt", "")
         if not prompt:
             return {"result": "error: no prompt given"}
+        # Phase 10.2: Check cache first for offline operation
+        cached = _response_cache.get(prompt)
+        if cached:
+            log.info("brain_dispatch cache hit for prompt: %s...", prompt[:60])
+            return {"result": cached.get("result", cached.get("response", "cached response")), "cached": True}
         # Streaming dispatch: speak partial results at natural breakpoints
         # so the user hears updates while the agent keeps working.
         full_text = []
@@ -357,9 +366,14 @@ async def _remote_execute(fc, tts=None) -> dict:
                     prompt=prompt,
                     result=result_msg,
                 )
+                # Phase 10.2: Cache the response for offline use
+                _response_cache.put(prompt, {"result": result_msg, "cached": False})
                 return {"result": result_msg}
             except Exception as e:
                 log.warning("brain_dispatch streaming failed: %s", e)
+                # Fall back to cache if network dispatch fails
+                if cached:
+                    return {"result": cached.get("result", "cached fallback"), "cached": True}
                 if tts:
                     tts.speak("Network error, switching to offline mode")
                 return {"result": "error: brain dispatch unavailable"}
@@ -377,10 +391,18 @@ async def _remote_execute(fc, tts=None) -> dict:
                     prompt=prompt,
                     result=msg,
                 )
+                # Phase 10.2: Cache the response for offline use
+                _response_cache.put(prompt, {"result": msg, "cached": False})
                 return {"result": msg}
+            # Phase 10.2: Fall back to cache if dispatch returned error
+            if cached:
+                return {"result": cached.get("result", "cached fallback"), "cached": True}
             return {"result": f"dispatch failed: {r.get('error', 'unknown')}"}
         except Exception as e:
             log.warning("brain_dispatch failed: %s", e)
+            # Fall back to cache if network dispatch fails
+            if cached:
+                return {"result": cached.get("result", "cached fallback"), "cached": True}
             if tts:
                 tts.speak("Network error, switching to offline mode")
             return {"result": "error: brain dispatch unavailable"}
