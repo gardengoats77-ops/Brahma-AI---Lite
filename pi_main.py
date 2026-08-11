@@ -754,6 +754,12 @@ async def _voice_loop(
         dash.set_muted(True)
     log.info("Whisplay dashboard started (available=%s)", dash.available)
 
+    # ── Initialize voice command plugin registry (Phase 12.1) ──────────────────
+    from pi.plugin_registry import registry as _voice_registry
+    plugin_count = _voice_registry.discover()
+    voice_tools = _voice_registry.get_tool_declarations()
+    log.info("Voice command plugins: %d plugins, %d tools", plugin_count, len(voice_tools))
+
     # ── Initialize power management (Phase 11.2: Battery/Power Management)
     power = get_power_manager()
     if power.available:
@@ -856,7 +862,7 @@ async def _run_live_session(
         output_audio_transcription={},
         input_audio_transcription={},
         system_instruction=sys_prompt,
-        tools=[{"function_declarations": _remote_tool_declarations()}],
+        tools=[{"function_declarations": _remote_tool_declarations() + _voice_registry.get_tool_declarations()}],
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(

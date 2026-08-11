@@ -328,3 +328,178 @@ class TestSingleton:
         # The singleton auto-discovers at import time
         tools = registry.get_all_tools()
         assert len(tools) > 0
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Test: @voice_command decorator (pi.plugin_registry)
+# ═══════════════════════════════════════════════════════════════════
+
+class TestVoiceCommandDecorator:
+    """Tests for the @voice_command decorator in pi.plugin_registry."""
+
+    def test_decorator_registers_tool(self):
+        """@voice_command('pattern') should auto-register the decorated function
+        in the registry with name, description, pattern, and handler."""
+        from pi.plugin_registry import VoiceCommandRegistry, VoicePluginInfo
+
+        reg = VoiceCommandRegistry()
+
+        @reg.register("turn on the lights", description="Turn on the lights")
+        def handle_lights(command_text: str, **kwargs) -> str:
+            return "Lights on"
+
+        plugins = reg.get_plugins()
+        assert len(plugins) == 1, f"Expected 1 plugin, got {len(plugins)}"
+
+        plugin = plugins[0]
+        assert isinstance(plugin, VoicePluginInfo)
+        assert plugin.name == "handle_lights"
+        assert plugin.description == "Turn on the lights"
+        assert plugin.pattern == "turn on the lights"
+        assert callable(plugin.handler)
+        assert plugin.handler("test") == "Lights on"
+
+    def test_decorator_via_voice_command_function(self):
+        """voice_command() convenience function should work as a decorator."""
+        from pi.plugin_registry import voice_command, registry
+
+        # Clear for clean test
+        registry.clear()
+
+        @voice_command("play music", description="Play music")
+        def handle_music(command_text: str, **kwargs) -> str:
+            return "Playing music"
+
+        plugins = registry.get_plugins()
+        assert len(plugins) == 1
+        assert plugins[0].name == "handle_music"
+        assert plugins[0].pattern == "play music"
+
+    def test_multiple_decorators(self):
+        """Multiple @voice_command decorators should all register."""
+        from pi.plugin_registry import VoiceCommandRegistry
+
+        reg = VoiceCommandRegistry()
+
+        @reg.register("turn on the lights", description="Turn on lights")
+        def handle_lights(command_text: str, **kwargs) -> str:
+            return "Lights on"
+
+        @reg.register("turn off the lights", description="Turn off lights")
+        def handle_lights_off(command_text: str, **kwargs) -> str:
+            return "Lights off"
+
+        @reg.register("play music", description="Play music")
+        def handle_music(command_text: str, **kwargs) -> str:
+            return "Playing music"
+
+        plugins = reg.get_plugins()
+        assert len(plugins) == 3
+        names = {p.name for p in plugins}
+        assert "handle_lights" in names
+        assert "handle_lights_off" in names
+        assert "handle_music" in names
+
+    def test_thread_safety(self):
+        """Concurrent registration should be thread-safe."""
+        import threading
+        from pi.plugin_registry import VoiceCommandRegistry
+
+        reg = VoiceCommandRegistry()
+        errors = []
+
+        def register_many(thread_id, n):
+            try:
+                for i in range(n):
+                    name = f"handler_{thread_id}_{i}"
+                    @reg.register(f"pattern_{name}", description=f"desc_{name}")
+                    def handler(command_text: str, **kwargs) -> str:
+                        return "ok"
+                    # Keep reference to avoid garbage collection
+                    handler.__name__ = name
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=register_many, args=(tid, 10)) for tid in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Thread errors: {errors}"
+        plugins = reg.get_plugins()
+        assert len(plugins) == 50, f"Expected 50 plugins, got {len(plugins)}"
+
+    def test_get_tool_declarations(self):
+        """get_tool_declarations() should return Live-compatible tool declarations."""
+        from pi.plugin_registry import VoiceCommandRegistry
+
+        reg = VoiceCommandRegistry()
+
+        @reg.register("turn on the lights", description="Turn on the lights")
+        def handle_lights(command_text: str, **kwargs) -> str:
+            return "Lights on"
+
+        tools = reg.get_tool_declarations()
+        assert len(tools) == 1
+        tool = tools[0]
+        assert tool["name"] == "handle_lights"
+        assert "Turn on the lights" in tool["description"]
+        assert "parameters" in tool
+        assert tool["parameters"]["type"] == "object"
+        assert "command_text" in tool["parameters"]["properties"]
+
+    def test_match_command(self):
+        """match_command() should find the right plugin for input text."""
+        from pi.plugin_registry import VoiceCommandRegistry
+
+        reg = VoiceCommandRegistry()
+
+        @reg.register("turn on the lights", description="Turn on lights")
+        def handle_lights(command_text: str, **kwargs) -> str:
+            return "Lights on"
+
+        result = reg.match_command("hey rex, turn on the lights please")
+        assert result is not None
+        plugin, match = result
+        assert plugin.name == "handle_lights"
+
+    def test_match_command_no_match(self):
+        """match_command() should return None when no pattern matches."""
+        from pi.plugin_registry import VoiceCommandRegistry
+
+        reg = VoiceCommandRegistry()
+
+        @reg.register("turn on the lights", description="Turn on lights")
+        def handle_lights(command_text: str, **kwargs) -> str:
+            return "Lights on"
+
+        result = reg.match_command("what's the weather like?")
+        assert result is None
+
+    def test_discover_plugins_directory(self):
+        """discover() should scan plugins/*.py and import decorated handlers."""
+        import tempfile
+        from pi.plugin_registry import VoiceCommandRegistry, registry
+
+        # Clear singleton for clean test
+        registry.clear()
+
+        # Create a temp plugins dir with a test plugin
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_file = Path(tmpdir) / "test_voice_plugin.py"
+            plugin_file.write_text(
+                "from pi.plugin_registry import voice_command\n\n"
+                "@voice_command('open the pod bay doors', description='Open pod bay doors')\n"
+                "def handle_pod_bay(command_text: str, **kwargs) -> str:\n"
+                "    return 'I\\'m sorry, Dave. I\\'m afraid I can\\'t do that.'\n"
+            )
+
+            count = registry.discover(tmpdir)
+            assert count >= 1
+            plugins = registry.get_plugins()
+            names = {p.name for p in plugins}
+            assert "handle_pod_bay" in names
+
+        # Cleanup
+        registry.clear()
