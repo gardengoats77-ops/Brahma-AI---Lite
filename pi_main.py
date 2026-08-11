@@ -44,6 +44,7 @@ from pi.gesture_control import GestureController
 from pi import dispatch_memory
 from pi import memory as conversation_memory
 from pi.error_recovery import with_error_recovery, CircuitBreaker
+from pi.power_mgmt import PowerManager
 
 if TYPE_CHECKING:
     from wake_word import WakeWordListener
@@ -85,6 +86,9 @@ _tts_ref: "dict[str, object | None]" = {"tts": None}
 _brain_circuit = CircuitBreaker(failure_threshold=3, cooldown=30.0)
 _fleet_circuit = CircuitBreaker(failure_threshold=3, cooldown=30.0)
 _tts_circuit = CircuitBreaker(failure_threshold=5, cooldown=10.0)
+
+# Power manager for battery-powered operation (Phase 11.2: Power Management)
+_power_manager: Optional[PowerManager] = None
 
 
 def _remote_tool_declarations() -> list[dict]:
@@ -633,6 +637,15 @@ def _on_gesture_stop(gesture_name: str) -> None:
         tts.speak("Stopping.")
 
 
+def get_power_manager() -> PowerManager:
+    """Get or create the global PowerManager instance."""
+    global _power_manager
+    if _power_manager is None:
+        _power_manager = PowerManager()
+        log.info("Power manager initialized (available=%s)", _power_manager.available)
+    return _power_manager
+
+
 def _load_api_key() -> str:
     """Read the Gemini API key from the config file."""
     cfg = Path(__file__).resolve().parent / "config" / "api_keys.json"
@@ -719,6 +732,14 @@ async def _voice_loop(
         dash.set_muted(True)
     log.info("Whisplay dashboard started (available=%s)", dash.available)
 
+    # ── Initialize power management (Phase 11.2: Battery/Power Management)
+    power = get_power_manager()
+    if power.available:
+        log.info(
+            "Power management active: profile=%s battery=%d%%",
+            power.current_profile.value, power.get_battery_percentage(),
+        )
+
     # ── Initialize Vosk STT fallback (Gemini unreachable -> offline STT) ─
     from pi.vosk_stt import VoskSTT
 
@@ -788,6 +809,9 @@ async def _voice_loop(
         # Re-arm for next cycle
         display.update("Re-arming...", "idle")
         log.info("Session ended — re-arming wake word")
+
+        # Check power state before next cycle (Phase 11.2: Power Management)
+        power.monitor_and_adjust(tts=_tts_ref.get("tts"))
 
 
 async def _run_live_session(
