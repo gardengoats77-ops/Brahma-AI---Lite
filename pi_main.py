@@ -298,6 +298,60 @@ def _remote_tool_declarations() -> list[dict]:
                 },
             },
         },
+        {
+            "name": "calendar_today",
+            "description": (
+                "Read today's calendar events and speak the schedule. "
+                "Use when the user asks 'what's today?', 'what's on my calendar?', "
+                "'do I have any meetings?', or similar. "
+                "Returns a voice-friendly summary of today's events."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+        {
+            "name": "calendar_tomorrow",
+            "description": (
+                "Read tomorrow's calendar events and speak the schedule. "
+                "Use when the user asks 'what's tomorrow?', 'what's on tomorrow?', "
+                "or similar. Returns a voice-friendly summary of tomorrow's events."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+        {
+            "name": "calendar_add",
+            "description": (
+                "Add an event to the calendar. "
+                "summary: event title (e.g., 'Team meeting'). "
+                "start: ISO datetime string (e.g., '2026-08-12T10:00:00'). "
+                "end: ISO datetime string (e.g., '2026-08-12T11:00:00'). "
+                "Use when the user says 'add a meeting', 'schedule an event', "
+                "or 'put this on my calendar'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "event title",
+                    },
+                    "start": {
+                        "type": "string",
+                        "description": "ISO datetime for event start",
+                    },
+                    "end": {
+                        "type": "string",
+                        "description": "ISO datetime for event end",
+                    },
+                },
+                "required": ["summary", "start", "end"],
+            },
+        },
     ]
 
 
@@ -538,6 +592,32 @@ async def _remote_execute(fc, tts=None) -> dict:
         if tts:
             tts.speak(msg)
         return {"result": msg, "reminders": reminders}
+    if name == "calendar_today":
+        from pi import calendar_sync
+
+        result = calendar_sync.calendar_today()
+        if tts:
+            tts.speak(result)
+        return {"result": result}
+    if name == "calendar_tomorrow":
+        from pi import calendar_sync
+
+        result = calendar_sync.calendar_tomorrow()
+        if tts:
+            tts.speak(result)
+        return {"result": result}
+    if name == "calendar_add":
+        from pi import calendar_sync
+
+        summary = args.get("summary", "")
+        start = args.get("start", "")
+        end = args.get("end", "")
+        if not summary or not start or not end:
+            return {"result": "error: summary, start, and end are required"}
+        result = calendar_sync.calendar_add(summary, start, end)
+        if tts:
+            tts.speak(result)
+        return {"result": result}
     return {"result": f"unknown tool {name}"}
 
 
