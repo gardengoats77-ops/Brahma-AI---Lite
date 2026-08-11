@@ -265,6 +265,27 @@ def run(name: str, command: str, timeout: float = 15.0) -> Dict[str, Any]:
     return _ssh_cmd(dev, command, timeout=timeout)
 
 
+from pi import file_transfer
+
+
+def file_send(name: str, local_path: str, remote_path: str,
+              timeout: float = 120.0) -> Dict[str, Any]:
+    """Send a file to a remote device by name (dispatches to file_transfer).
+
+    Looks up the device in the registry, validates the local file exists,
+    and transfers via rsync/scp with checksum verification.
+
+    Usage: ``file_send("tablet", "/home/gwuap/doc.pdf", "/tmp/doc.pdf")``
+    """
+    dev = next((d for d in discover_devices() if d.get("name") == name), None)
+    if dev is None:
+        return {
+            "name": name, "ok": False, "verified": False,
+            "error": f"unknown device: {name}",
+        }
+    return file_transfer.send_file(dev, local_path, remote_path, timeout=timeout)
+
+
 def open_app(name: str, app: str = "browser", timeout: float = 15.0) -> Dict[str, Any]:
     """Open a well-known app on a remote device (safe, allow-listed)."""
     dev = next((d for d in discover_devices() if d.get("name") == name), None)

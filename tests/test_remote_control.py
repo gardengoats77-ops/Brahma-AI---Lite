@@ -305,3 +305,101 @@ def test_standard_ssh_success_no_fallback(tmp_path, monkeypatch):
     assert len(ssh_calls) == 1
     assert len(ts_calls) == 0
     assert result["ok"] is True
+
+
+# ─── File transfer between devices ────────────────────────────────────────
+
+def test_file_transfer(tmp_path, monkeypatch):
+    """file_send should transfer a file via rsync/scp and verify via checksum."""
+    import hashlib
+
+    from pi import file_transfer as ft
+
+    _fake_devices(tmp_path, monkeypatch)
+
+    # Create a real source file.
+    src = tmp_path / "test.pdf"
+    src.write_bytes(b"fake pdf content\n" * 100)
+    src_hash = hashlib.sha256(src.read_bytes()).hexdigest()
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        # rsync success.
+        if isinstance(cmd, list) and cmd[0] == "rsync":
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="", stderr=""
+            )
+        # ssh sha256sum verification success.
+        if isinstance(cmd, list) and cmd[0] == "ssh":
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout=f"{src_hash}  /tmp/doc.pdf\n", stderr=""
+            )
+        # ssh test -f to check file existence.
+        if isinstance(cmd, list) and "test" in cmd:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    device = {"name": "tablet", "host": "100.100.134.82", "user": "gwuap"}
+    result = ft.send_file(device, str(src), "/tmp/doc.pdf")
+
+    assert result["ok"] is True
+    assert result["verified"] is True
+    assert result["local_path"] == str(src)
+    assert result["remote_path"] == "/tmp/doc.pdf"
+    assert "sha256" in result
+    assert result["sha256"] == src_hash
+
+    # Verify rsync was called.
+    rsync_calls = [c for c in calls if isinstance(c, list) and c[0] == "rsync"]
+    assert len(rsync_calls) == 1
+    assert "100.100.134.82" in rsync_calls[0][-1]
+
+
+def test_file_transfer_missing_file(tmp_path, monkeypatch):
+    """file_send should error gracefully when local file is missing."""
+    from pi import file_transfer as ft
+
+    _fake_devices(tmp_path, monkeypatch)
+
+    device = {"name": "tablet", "host": "100.100.134.82", "user": "gwuap"}
+    result = ft.send_file(device, "/nonexistent/file.pdf", "/tmp/doc.pdf")
+
+    assert result["ok"] is False
+    assert "not found" in result["error"].lower() or "no such" in result["error"].lower()
+
+
+def test_file_send_bridge(tmp_path, monkeypatch):
+    """remote_control.file_send should delegate to file_transfer.send_file."""
+    from pi import file_transfer as ft
+    from pi import remote_control as rc
+
+    _fake_devices(tmp_path, monkeypatch)
+
+    src = tmp_path / "bridge.pdf"
+    src.write_bytes(b"bridge test\n" * 10)
+    src_hash = __import__("hashlib").sha256(src.read_bytes()).hexdigest()
+
+    monkeypatch.setattr(
+        ft,
+        "send_file",
+        lambda dev, local_path, remote_path, **kw: {
+            "ok": True,
+            "verified": True,
+            "sha256": src_hash,
+            "local_path": local_path,
+            "remote_path": remote_path,
+        },
+    )
+
+    # Use "desktop" which is in the registry.
+    result = rc.file_send("desktop", str(src), "/tmp/doc.pdf")
+    assert result["ok"] is True
+    assert result["sha256"] == src_hash
