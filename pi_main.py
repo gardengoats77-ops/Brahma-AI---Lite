@@ -41,6 +41,7 @@ from pi.whisplay_display import WhisplayDisplay
 from pi.whisplay_dashboard import get_dashboard
 from pi.hailo_engine import HailoEngine
 from pi import dispatch_memory
+from pi import memory as conversation_memory
 
 if TYPE_CHECKING:
     from wake_word import WakeWordListener
@@ -378,6 +379,13 @@ async def _voice_loop(
     wake_event = asyncio.Event()
     wakeword_triggered = {"flag": False}
 
+    # ── Boot hydration: load recent conversation from prior session ────
+    recent_turns = conversation_memory.hydrate_recent(limit=10)
+    if recent_turns:
+        log.info("Hydrating with %d recent conversation turns", len(recent_turns))
+    else:
+        log.info("No prior conversation to hydrate")
+
     try:
         from wake_word import WakeWordListener
 
@@ -543,11 +551,13 @@ async def _run_live_session(
                             if txt:
                                 log.info("Rex: %s", txt)
                                 display.update(txt[:60], "speaking")
+                                conversation_memory.append_exchange("assistant", txt)
                         if sc.input_transcription and sc.input_transcription.text:
                             txt = sc.input_transcription.text.strip()
                             if txt:
                                 log.info("You: %s", txt)
                                 display.update(txt[:60], "listening")
+                                conversation_memory.append_exchange("user", txt)
                         if sc.turn_complete:
                             is_speaking["flag"] = False
 

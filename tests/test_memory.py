@@ -186,3 +186,104 @@ class TestFormatMemoryForPrompt:
         from memory.memory_manager import format_memory_for_prompt
         result = format_memory_for_prompt(sample_memory)
         assert "WHAT YOU KNOW ABOUT THIS PERSON" in result
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.1: Cross-Session Conversation Memory
+# ---------------------------------------------------------------------------
+
+class TestCrossSessionHydration:
+    """Tests for pi/memory.py — cross-session conversation memory."""
+
+    def test_append_and_recall(self, tmp_path):
+        """Appending exchanges then hydrating should return them in order."""
+        mem_file = tmp_path / "conversation_memory.json"
+        with patch("pi.memory.CONVERSATION_MEMORY_FILE", mem_file):
+            from pi.memory import append_exchange, hydrate_recent
+
+            append_exchange("user", "Hello Rex")
+            append_exchange("assistant", "Hi! How can I help?")
+            append_exchange("user", "What's the weather?")
+
+            recent = hydrate_recent()
+            assert len(recent) == 3
+            assert recent[0]["role"] == "user"
+            assert recent[0]["content"] == "Hello Rex"
+            assert recent[1]["role"] == "assistant"
+            assert recent[1]["content"] == "Hi! How can I help?"
+            assert recent[2]["role"] == "user"
+            assert recent[2]["content"] == "What's the weather?"
+
+    def test_hydrate_empty_returns_empty(self, tmp_path):
+        """Hydrating with no memory file should return empty list."""
+        mem_file = tmp_path / "conversation_memory.json"
+        with patch("pi.memory.CONVERSATION_MEMORY_FILE", mem_file):
+            from pi.memory import hydrate_recent
+            assert hydrate_recent() == []
+
+    def test_hydrate_last_n_turns(self, tmp_path):
+        """hydrate_recent(limit=N) should return only the last N turns."""
+        mem_file = tmp_path / "conversation_memory.json"
+        with patch("pi.memory.CONVERSATION_MEMORY_FILE", mem_file):
+            from pi.memory import append_exchange, hydrate_recent
+
+            for i in range(10):
+                append_exchange("user", f"msg {i}")
+                append_exchange("assistant", f"reply {i}")
+
+            recent = hydrate_recent(limit=4)
+            assert len(recent) == 4
+            assert recent[0]["content"] == "msg 8"
+            assert recent[-1]["content"] == "reply 9"
+
+    def test_fifty_turn_cap(self, tmp_path):
+        """Only the last 50 turns should be kept in the file."""
+        mem_file = tmp_path / "conversation_memory.json"
+        with patch("pi.memory.CONVERSATION_MEMORY_FILE", mem_file):
+            from pi.memory import append_exchange, hydrate_recent
+
+            for i in range(60):
+                append_exchange("user", f"turn {i}")
+
+            recent = hydrate_recent()
+            assert len(recent) == 50
+            assert recent[0]["content"] == "turn 10"
+            assert recent[-1]["content"] == "turn 59"
+
+    def test_timestamp_recorded(self, tmp_path):
+        """Each exchange should have a timestamp."""
+        mem_file = tmp_path / "conversation_memory.json"
+        with patch("pi.memory.CONVERSATION_MEMORY_FILE", mem_file):
+            from pi.memory import append_exchange, hydrate_recent
+
+            append_exchange("user", "test")
+            recent = hydrate_recent()
+            assert "timestamp" in recent[0]
+            assert isinstance(recent[0]["timestamp"], float)
+
+
+def test_cross_session_hydration(tmp_path):
+    """End-to-end: boot hydrates last N turns from prior session."""
+    mem_file = tmp_path / "conversation_memory.json"
+    with patch("pi.memory.CONVERSATION_MEMORY_FILE", mem_file):
+        from pi.memory import append_exchange, hydrate_recent
+
+        # Simulate a prior session with 5 turns
+        append_exchange("user", "Hey Rex")
+        append_exchange("assistant", "Hello! How can I help you today?")
+        append_exchange("user", "Set a timer for 5 minutes")
+        append_exchange("assistant", "Done, timer set for 5 minutes.")
+        append_exchange("user", "What's on my calendar?")
+
+        # Boot hydration — retrieve last 10 turns (only 5 stored)
+        recent = hydrate_recent(limit=10)
+        assert len(recent) == 5
+        assert recent[0]["content"] == "Hey Rex"
+        assert recent[0]["role"] == "user"
+        assert recent[-1]["content"] == "What's on my calendar?"
+
+        # Boot hydration with smaller limit
+        recent = hydrate_recent(limit=2)
+        assert len(recent) == 2
+        assert recent[0]["content"] == "Done, timer set for 5 minutes."
+        assert recent[-1]["content"] == "What's on my calendar?"
