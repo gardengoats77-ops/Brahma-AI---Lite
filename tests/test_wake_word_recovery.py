@@ -116,3 +116,98 @@ def test_recovery_compiles_and_python_syntax(tmp_path, monkeypatch):
     import py_compile
 
     py_compile.compile("wake_word.py", doraise=True)
+
+
+def test_download_fallback_recovers_when_no_zip(tmp_path, monkeypatch):
+    """No local zip -> download from alphacephei -> extract -> recover."""
+    import types
+    import zipfile
+
+    _install_fake_vosk(monkeypatch)
+    target = tmp_path / "vosk-model-small-en-us-0.15"
+
+    # Build a fake zip that the "download" will produce.
+    fake_zip = tmp_path / "fake-download.zip"
+    with zipfile.ZipFile(fake_zip, "w") as zf:
+        zf.writestr("vosk-model-small-en-us-0.15/README", "fake model\n")
+        zf.writestr("vosk-model-small-en-us-0.15/conf/model.conf", "foo\n")
+
+    # Monkeypatch _download_model_zip to copy our fake zip into place.
+    from wake_word import WakeWordListener
+
+    def _fake_download(self):
+        import shutil
+        dest = Path(str(self._model_dir) + ".zip")
+        shutil.copy2(fake_zip, dest)
+        return dest
+
+    monkeypatch.setattr(WakeWordListener, "_download_model_zip", _fake_download)
+
+    w = WakeWordListener(model_dir=str(target))
+    assert w.available is True
+    assert target.is_dir()
+    assert (target / "README").read_text() == "fake model\n"
+    # The downloaded zip should now exist as a sibling for future recoveries.
+    assert (tmp_path / "vosk-model-small-en-us-0.15.zip").is_file()
+
+
+def test_download_fallback_fails_gracefully(tmp_path, monkeypatch):
+    """No zip, download fails -> available=False, no crash."""
+    _install_fake_vosk(monkeypatch)
+    target = tmp_path / "vosk-model-small-en-us-0.15"
+
+    from wake_word import WakeWordListener
+
+    def _fail_download(self):
+        return None
+
+    monkeypatch.setattr(WakeWordListener, "_download_model_zip", _fail_download)
+
+    w = WakeWordListener(model_dir=str(target))
+    assert w.available is False
+    assert not target.exists()
+
+
+def test_download_caches_zip_for_future_recovery(tmp_path, monkeypatch):
+    """Download writes a sibling zip so subsequent corruption doesn't need re-download."""
+    import types
+    import zipfile
+
+    _install_fake_vosk(monkeypatch)
+    target = tmp_path / "vosk-model-small-en-us-0.15"
+
+    fake_zip = tmp_path / "fake-download.zip"
+    with zipfile.ZipFile(fake_zip, "w") as zf:
+        zf.writestr("vosk-model-small-en-us-0.15/README", "fake model\n")
+        zf.writestr("vosk-model-small-en-us-0.15/conf/model.conf", "foo\n")
+
+    from wake_word import WakeWordListener
+
+    download_count = {"n": 0}
+
+    def _fake_download(self):
+        import shutil
+        download_count["n"] += 1
+        dest = Path(str(self._model_dir) + ".zip")
+        shutil.copy2(fake_zip, dest)
+        return dest
+
+    monkeypatch.setattr(WakeWordListener, "_download_model_zip", _fake_download)
+
+    # First init: no model, no zip -> download -> recover.
+    w = WakeWordListener(model_dir=str(target))
+    assert w.available is True
+    assert download_count["n"] == 1
+
+    # Now corrupt the model dir and init again — should recover from the
+    # cached zip WITHOUT re-downloading.
+    import shutil
+    shutil.rmtree(target)
+    (target).mkdir(parents=True)
+    (target / "am").mkdir()
+    (target / "am" / "final.mdl").write_text("corrupt")
+
+    w2 = WakeWordListener(model_dir=str(target))
+    assert w2.available is True
+    # Download was NOT called again — the sibling zip was used directly.
+    assert download_count["n"] == 1

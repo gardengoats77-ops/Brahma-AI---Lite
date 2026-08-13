@@ -39,9 +39,11 @@ if [[ ! -d config/models/vosk-model-small-en-us-0.15 ]]; then
     cd config/models
     curl -sSLO https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
     unzip -q vosk-model-small-en-us-0.15.zip
-    rm -f vosk-model-small-en-us-0.15.zip
+    # Keep the zip as a recovery source for wake_word.py self-heal.
+    # If the extracted model dir gets corrupted on the Pi, the listener
+    # can rebuild it from this sibling zip without re-downloading.
   )
-  echo "[setup-pi] Vosk model downloaded."
+  echo "[setup-pi] Vosk model downloaded (zip kept for self-heal)."
 else
   echo "[setup-pi] Vosk model already present."
 fi

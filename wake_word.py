@@ -106,13 +106,19 @@ class WakeWordListener:
             log.warning("wake_word: unavailable (%s)", exc)
             self._available = False
 
+    # Vosk model download URL (small en-us 0.15, ~40 MB).
+    _MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+
     def _recover_model_from_zip(self) -> bool:
         """Self-heal a corrupt/missing Vosk model from its sibling <name>.zip.
 
         Extracts to a temp sibling dir, verifies the fresh copy loads, then
         atomically swaps it into place. Returns True only when the swap
-        succeeded and the new dir passes vosk.Model(). No-op (False) when
-        no zip exists or the zip is itself broken — the caller degrades.
+        succeeded and the new dir passes vosk.Model().
+
+        If no local zip exists, attempts to download the model from
+        alphacephei.com before extracting. No-op (False) when the download
+        fails or the zip is itself broken — the caller degrades.
         """
         import shutil
         import tempfile
@@ -129,7 +135,10 @@ class WakeWordListener:
             if generic.is_file():
                 zip_path = generic
         if zip_path is None:
-            return False
+            # Last resort: download the model zip from alphacephei.com.
+            zip_path = self._download_model_zip()
+            if zip_path is None:
+                return False
         try:
             parent = self._model_dir.parent
             tmp_dir = Path(tempfile.mkdtemp(prefix="vosk-model-", dir=str(parent)))
@@ -177,6 +186,32 @@ class WakeWordListener:
         except Exception as exc:
             log.warning("wake_word: zip recovery failed: %s", exc)
             return False
+
+    def _download_model_zip(self) -> Path | None:
+        """Download the Vosk model zip to a sibling of the model dir.
+
+        Returns the path to the downloaded zip, or None on failure.
+        The caller (_recover_model_from_zip) extracts and validates it.
+        """
+        import urllib.request
+
+        target = Path(str(self._model_dir) + ".zip")
+        try:
+            self._model_dir.parent.mkdir(parents=True, exist_ok=True)
+            log.info("wake_word: downloading model from %s", self._MODEL_URL)
+            urllib.request.urlretrieve(self._MODEL_URL, str(target))
+            if target.stat().st_size < 1_000_000:
+                # Under 1 MB — almost certainly an error page, not a model.
+                log.warning("wake_word: download too small (%d bytes), discarding",
+                            target.stat().st_size)
+                target.unlink(missing_ok=True)
+                return None
+            log.info("wake_word: model zip downloaded (%d bytes)", target.stat().st_size)
+            return target
+        except Exception as exc:
+            log.warning("wake_word: model download failed: %s", exc)
+            target.unlink(missing_ok=True)
+            return None
 
     def _make_recognizer(self):
         from vosk import KaldiRecognizer
