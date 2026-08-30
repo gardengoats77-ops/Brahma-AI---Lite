@@ -1,9 +1,9 @@
 $WshShell = New-Object -ComObject WScript.Shell
-$Shortcut = $WshShell.CreateShortcut('C:\Users\ravit\OneDrive\Desktop\Brahma Ai - Premium.lnk')
-$Shortcut.TargetPath = 'D:\TiTech Prabha Solution\Brahma AI\Brahma AI\Brahma AI - Lite\.venv\Scripts\python.exe'
-$Shortcut.Arguments = '"D:\TiTech Prabha Solution\Brahma AI\Brahma AI\Brahma AI - Lite\main.py"'
-$Shortcut.WorkingDirectory = 'D:\TiTech Prabha Solution\Brahma AI\Brahma AI\Brahma AI - Lite'
+$Shortcut = $WshShell.CreateShortcut('C:\Users\garde\OneDrive\Desktop\REX.lnk')
+$Shortcut.TargetPath = 'C:\Users\garde\projects\REX-AI\.venv\Scripts\python.exe'
+$Shortcut.Arguments = '"C:\Users\garde\projects\REX-AI\main.py"'
+$Shortcut.WorkingDirectory = 'C:\Users\garde\projects\REX-AI'
 $Shortcut.WindowStyle = 7
-$Shortcut.Description = 'Launch Brahma Ai - Premium'
-if ('D:\TiTech Prabha Solution\Brahma AI\Brahma AI\Brahma AI - Lite\assets\Brahma_Lite_Logo.ico') { $Shortcut.IconLocation = 'D:\TiTech Prabha Solution\Brahma AI\Brahma AI\Brahma AI - Lite\assets\Brahma_Lite_Logo.ico,0' }
+$Shortcut.Description = 'Launch REX'
+if ('C:\Users\garde\projects\REX-AI\assets\REX_Logo.ico') { $Shortcut.IconLocation = 'C:\Users\garde\projects\REX-AI\assets\REX_Logo.ico,0' }
 $Shortcut.Save()

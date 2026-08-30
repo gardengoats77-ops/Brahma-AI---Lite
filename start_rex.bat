@@ -117,11 +117,8 @@ if %errorlevel% neq 0 (
 
 echo.
 echo Launching REX...
-if exist "%PYW%" (
-  start "REX" /b "%PYW%" "%MAIN%" --startup
-) else (
-  start "REX" /b "%PYCMD%" "%MAIN%" --startup
-)
+REM Use python.exe (not pythonw.exe) for reliable GUI launch
+start "REX" /b "%PYTHON%" "%MAIN%" --startup
 
 echo Launcher complete.
 exit /b 0
