@@ -177,7 +177,9 @@ class PluginRegistry:
         return list(self._plugins.values())
 
     def get_handler(self, tool_name: str) -> Optional[Callable]:
-        """Get the handler for a specific tool name."""
+        """Get a tool handler, discovering action Modules on first use."""
+        if not self._loaded:
+            self.discover()
         return self._dispatch_map.get(tool_name)
 
     def validate_all(self, core_tool_names: set = None) -> list[str]:

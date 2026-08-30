@@ -12,11 +12,30 @@ import traceback
 import os
 from pathlib import Path
 
-try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-except Exception as _e:
-    log_error(_e, context="main.unknown", severity="warning")
+from core.error_handler import log_error, handle_errors, get_logger
+
+
+def _configure_stdio(stdout=None, stderr=None) -> None:
+    """Best-effort UTF-8 stream setup that never blocks application startup."""
+    streams = (
+        stdout if stdout is not None else sys.stdout,
+        stderr if stderr is not None else sys.stderr,
+    )
+    for stream in streams:
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            try:
+                log_error(exc, context="main.stdio", severity="warning")
+            except Exception:
+                # Logging itself must not become a startup dependency.
+                try:
+                    sys.__stderr__.write(f"REX startup warning: {exc}\n")
+                except Exception:
+                    pass
+
+
+_configure_stdio()
 
 import sounddevice as sd
 from google import genai
@@ -38,7 +57,6 @@ from workspace_store import store as workspace_store
 from smart_home.service import SmartHomeService
 from plugin_manager import PluginManager
 from plugin_registry import registry as plugin_registry_singleton
-from core.error_handler import log_error, handle_errors, get_logger
 from core.dispatcher import dispatcher
 from core.action_registry import register_all_actions
 
@@ -87,13 +105,18 @@ def _startup_log(message: str) -> None:
 
 
 def _ensure_desktop_shortcut() -> None:
+    """Create Desktop and Start Menu shortcuts for REX.
+
+    Creates shortcuts at both locations on every launch if missing.
+    The marker file prevents repeated work when both already exist;
+    but if either .lnk is gone, they're recreated regardless.
+    """
     if os.name != "nt":
         return
 
     marker_path = BASE_DIR / "config" / ".desktop_shortcut_created"
-    if marker_path.exists():
-        return
 
+    # Resolve target paths
     try:
         import winreg
         try:
@@ -103,46 +126,72 @@ def _ensure_desktop_shortcut() -> None:
             desktop_dir = Path(os.path.expandvars(desktop_raw))
         except Exception:
             desktop_dir = Path(os.path.expanduser("~")) / "Desktop"
-            
-        desktop_dir.mkdir(parents=True, exist_ok=True)
-        shortcut_path = desktop_dir / "REX.lnk"
-        script_path = BASE_DIR / "main.py"
-        icon_path = BASE_DIR / "assets" / "REX_Logo.ico"
+    except Exception:
+        desktop_dir = Path(os.path.expanduser("~")) / "Desktop"
 
-        if not icon_path.exists():
-            icon_path = None
+    desktop_dir.mkdir(parents=True, exist_ok=True)
+    desktop_lnk = desktop_dir / "REX.lnk"
 
+    # Start Menu: skip if APPDATA is unavailable (extremely rare edge case)
+    appdata = os.environ.get("APPDATA", "")
+    start_menu_dir = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" if appdata else None
+    start_menu_lnk = start_menu_dir / "REX.lnk" if start_menu_dir else None
+
+    # Skip only if marker exists AND both shortcuts exist
+    if marker_path.exists() and desktop_lnk.exists() and (start_menu_lnk is None or start_menu_lnk.exists()):
+        return
+
+    try:
+        # Prefer python.exe (console-aware) over pythonw.exe (GUI-only).
+        # pythonw.exe causes exit-code-127 native crashes during Qt init on
+        # some Windows configurations.
         python_exe = sys.executable
-        if not python_exe:
-            python_exe = shutil.which("python") or shutil.which("py") or "python"
-
-        shortcut_target = python_exe
-        shortcut_args = f'"{script_path}"'
-        if getattr(sys, "frozen", False):
-            shortcut_target = python_exe
-            shortcut_args = ""
+        if not python_exe or python_exe.endswith("pythonw.exe"):
+            venv_python = BASE_DIR / ".venv" / "Scripts" / "python.exe"
+            if venv_python.exists():
+                python_exe = str(venv_python)
+            else:
+                python_exe = shutil.which("python") or shutil.which("py") or "python"
 
         powershell_exe = shutil.which("powershell.exe") or shutil.which("powershell")
         if powershell_exe is None:
             raise RuntimeError("PowerShell is not available")
 
+        icon_path = BASE_DIR / "assets" / "REX_Logo.ico"
+        icon_value = str(icon_path) if icon_path.exists() else ""
+        root_str = str(BASE_DIR)
+
         def _ps_escape(value: str) -> str:
             return value.replace("'", "''")
 
-        icon_value = str(icon_path) if icon_path and icon_path.exists() else ""
-        ps1_path = BASE_DIR / "config" / "create_desktop_shortcut.ps1"
-        ps1_script = "\n".join([
+        # Build a single PS1 that creates both shortcuts
+        ps1_lines = [
             "$WshShell = New-Object -ComObject WScript.Shell",
-            f"$Shortcut = $WshShell.CreateShortcut('{_ps_escape(str(shortcut_path))}')",
-            f"$Shortcut.TargetPath = '{_ps_escape(shortcut_target)}'",
-            f"$Shortcut.Arguments = '{_ps_escape(shortcut_args)}'",
-            f"$Shortcut.WorkingDirectory = '{_ps_escape(str(BASE_DIR))}'",
-            "$Shortcut.WindowStyle = 7",
-            "$Shortcut.Description = 'Launch REX'",
-            f"if ('{_ps_escape(icon_value)}') {{ $Shortcut.IconLocation = '{_ps_escape(icon_value)},0' }}",
-            "$Shortcut.Save()",
-        ])
-        ps1_path.write_text(ps1_script, encoding="utf-8")
+            "",
+        ]
+        shortcuts_to_create = [("Desktop", desktop_lnk)]
+        if start_menu_dir is not None and start_menu_lnk is not None:
+            start_menu_dir.mkdir(parents=True, exist_ok=True)
+            shortcuts_to_create.append(("Start Menu", start_menu_lnk))
+        for label, lnk_path in shortcuts_to_create:
+            ps1_lines += [
+                f"# {label} shortcut",
+                f"$Shortcut = $WshShell.CreateShortcut('{_ps_escape(str(lnk_path))}')",
+                f"$Shortcut.TargetPath = '{_ps_escape(python_exe)}'",
+                f"$Shortcut.Arguments = '\"{_ps_escape(str(BASE_DIR / 'main.py'))}\" --startup'" if not getattr(sys, "frozen", False) else "",
+                f"$Shortcut.WorkingDirectory = '{_ps_escape(root_str)}'",
+                "$Shortcut.WindowStyle = 7",
+                "$Shortcut.Description = 'Launch REX'",
+            ]
+            if icon_value:
+                ps1_lines.append(f"$Shortcut.IconLocation = '{_ps_escape(icon_value)},0'")
+            ps1_lines += [
+                "$Shortcut.Save()",
+                "",
+            ]
+
+        ps1_path = BASE_DIR / "config" / "create_desktop_shortcut.ps1"
+        ps1_path.write_text("\n".join(ps1_lines), encoding="utf-8")
 
         subprocess.run(
             [powershell_exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1_path)],
@@ -151,9 +200,9 @@ def _ensure_desktop_shortcut() -> None:
             text=True,
         )
         marker_path.write_text("created", encoding="utf-8")
-        _startup_log(f"desktop shortcut created at {shortcut_path}")
+        _startup_log(f"shortcuts created: Desktop={desktop_lnk.exists()}, StartMenu={start_menu_lnk.exists()}")
     except Exception as exc:
-        _startup_log(f"desktop shortcut creation skipped: {exc}")
+        _startup_log(f"shortcut creation skipped: {exc}")
 
 
 def _load_system_prompt() -> str:

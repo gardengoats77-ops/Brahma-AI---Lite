@@ -169,6 +169,17 @@ class ActionDispatcher:
         if action is None:
             return f"Unknown action: {name}"
 
+        # Plugin-shaped registrations intentionally keep their implementation
+        # in PluginRegistry; resolve them through the same fallback used by
+        # undiscovered action names instead of inspecting a None handler.
+        if action.dispatch == "plugin":
+            if plugin_registry and plugin_registry.get_handler(name):
+                result = await loop.run_in_executor(
+                    None, lambda: plugin_registry.dispatch(name, args, speak)
+                )
+                return result or action.default_result
+            return f"Action '{name}' is unavailable: plugin handler not loaded."
+
         # ── Pre-dispatch mutations (file_processor, word_document) ───────
         if name == "file_processor" and ui:
             if not args.get("file_path") and getattr(ui, "current_file", None):
