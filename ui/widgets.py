@@ -368,25 +368,29 @@ class _SysMetrics:
             self.tmp = tmp
 
     def _get_gpu(self) -> float:
-        # NVIDIA
-        try:
-            r = _quiet_run(
-                ["nvidia-smi", "--query-gpu=utilization.gpu",
-                 "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=2
-            )
-            if r.returncode == 0:
-                vals = [float(v.strip()) for v in r.stdout.strip().split("\n") if v.strip()]
-                if vals:
-                    return sum(vals) / len(vals)
-        except Exception as _e:
-            log_error(_e, context="ui", severity="debug")
-
-        # AMD (Linux)
-        if _OS == "Linux":
+        # NVIDIA — only probe if the binary exists
+        import shutil as _shutil
+        nvidia_smi = _shutil.which("nvidia-smi")
+        if nvidia_smi:
             try:
                 r = _quiet_run(
-                    ["rocm-smi", "--showuse", "--csv"],
+                    [nvidia_smi, "--query-gpu=utilization.gpu",
+                     "--format=csv,noheader,nounits"],
+                    capture_output=True, text=True, timeout=2
+                )
+                if r.returncode == 0:
+                    vals = [float(v.strip()) for v in r.stdout.strip().split("\n") if v.strip()]
+                    if vals and all(math.isfinite(value) and 0.0 <= value <= 100.0 for value in vals):
+                        return sum(vals) / len(vals)
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
+
+        # AMD (Linux)
+        rocm_smi = _shutil.which("rocm-smi")
+        if _OS == "Linux" and rocm_smi:
+            try:
+                r = _quiet_run(
+                    [rocm_smi, "--showuse", "--csv"],
                     capture_output=True, text=True, timeout=2
                 )
                 if r.returncode == 0:
@@ -394,82 +398,116 @@ class _SysMetrics:
                         parts = line.split(",")
                         if len(parts) >= 2:
                             try:
-                                return float(parts[1].strip().replace("%", ""))
+                                value = float(parts[1].strip().replace("%", ""))
+                                if math.isfinite(value) and 0.0 <= value <= 100.0:
+                                    return value
                             except ValueError:
                                 pass
             except Exception as _e:
                 log_error(_e, context="ui", severity="debug")
 
-            # Intel GPU (Linux)
+        # Intel GPU (Linux)
+        intel_gpu_top = _shutil.which("intel_gpu_top")
+        if _OS == "Linux" and intel_gpu_top:
             try:
                 r = _quiet_run(
-                    ["intel_gpu_top", "-J", "-s", "500"],
+                    [intel_gpu_top, "-J", "-s", "500"],
                     capture_output=True, text=True, timeout=1
                 )
                 if r.returncode == 0 and "Render/3D" in r.stdout:
-                    import re
                     m = re.search(r'"busy":\s*([\d.]+)', r.stdout)
                     if m:
-                        return float(m.group(1))
+                        value = float(m.group(1))
+                        if math.isfinite(value) and 0.0 <= value <= 100.0:
+                            return value
             except Exception as _e:
                 log_error(_e, context="ui", severity="debug")
 
         # macOS - powermetrics (GPU Engine)
-        if _OS == "Darwin":
+        sudo_exe = _shutil.which("sudo")
+        powermetrics = _shutil.which("powermetrics")
+        if _OS == "Darwin" and sudo_exe and powermetrics:
             try:
                 r = _quiet_run(
-                    ["sudo", "-n", "powermetrics", "-n", "1", "-i", "500",
+                    [sudo_exe, "-n", powermetrics, "-n", "1", "-i", "500",
                      "--samplers", "gpu_power"],
                     capture_output=True, text=True, timeout=2
                 )
                 if r.returncode == 0 and "GPU" in r.stdout:
-                    import re
                     m = re.search(r'GPU\s+Active:\s+([\d.]+)%', r.stdout)
                     if m:
-                        return float(m.group(1))
+                        value = float(m.group(1))
+                        if math.isfinite(value) and 0.0 <= value <= 100.0:
+                            return value
             except Exception as _e:
                 log_error(_e, context="ui", severity="debug")
 
         return -1.0
 
     def _get_temp(self) -> float:
-        try:
-            temps = psutil.sensors_temperatures()
-            candidates = ["coretemp", "k10temp", "cpu_thermal", "acpitz",
-                          "cpu-thermal", "zenpower", "it8688"]
-            for name in candidates:
-                if name in temps:
-                    entries = temps[name]
+        sensors_temperatures = getattr(psutil, "sensors_temperatures", None)
+        if callable(sensors_temperatures):
+            try:
+                temps = sensors_temperatures()
+                candidates = ["coretemp", "k10temp", "cpu_thermal", "acpitz",
+                              "cpu-thermal", "zenpower", "it8688"]
+                for name in candidates:
+                    if name in temps:
+                        entries = temps[name]
+                        if entries:
+                            try:
+                                value = float(entries[0].current)
+                            except (TypeError, ValueError):
+                                continue
+                            if math.isfinite(value) and -50.0 <= value <= 150.0:
+                                return value
+                for entries in temps.values():
                     if entries:
-                        return entries[0].current
-            for entries in temps.values():
-                if entries:
-                    return entries[0].current
-        except Exception as _e:
-            log_error(_e, context="ui", severity="debug")
-        if _OS == "Darwin":
+                        try:
+                            value = float(entries[0].current)
+                        except (TypeError, ValueError):
+                            continue
+                        if math.isfinite(value) and -50.0 <= value <= 150.0:
+                            return value
+            except Exception as _e:
+                log_error(_e, context="ui", severity="debug")
+        import shutil as _shutil
+        osx_cpu_temp = _shutil.which("osx-cpu-temp")
+        if _OS == "Darwin" and osx_cpu_temp:
             try:
                 r = _quiet_run(
-                    ["osx-cpu-temp"], capture_output=True, text=True, timeout=2
+                    [osx_cpu_temp], capture_output=True, text=True, timeout=2
                 )
                 if r.returncode == 0:
-                    import re
-                    m = re.search(r"([\d.]+)", r.stdout)
-                    if m:
-                        return float(m.group(1))
+                    match = re.fullmatch(
+                        r"\s*([-+]?\d+(?:\.\d+)?)\s*(?:°\s*C|C)\s*",
+                        r.stdout,
+                        flags=re.IGNORECASE,
+                    )
+                    if match:
+                        value = float(match.group(1))
+                        if math.isfinite(value) and -50.0 <= value <= 150.0:
+                            return value
             except Exception as _e:
                 log_error(_e, context="ui", severity="debug")
 
-        if _OS == "Windows":
+        powershell_exe = _shutil.which("powershell") or _shutil.which("powershell.exe")
+        if _OS == "Windows" and powershell_exe:
             try:
                 r = _quiet_run(
-                    ["powershell", "-Command",
+                    [powershell_exe, "-Command",
                      "(Get-WmiObject MSAcpi_ThermalZoneTemperature -Namespace root/wmi).CurrentTemperature"],
                     capture_output=True, text=True, timeout=3
                 )
                 if r.returncode == 0 and r.stdout.strip():
-                    raw = float(r.stdout.strip().split("\n")[0])
-                    return (raw / 10.0) - 273.15
+                    # PowerShell may emit env-loading noise; pick the first numeric line
+                    for line in r.stdout.strip().split("\n"):
+                        stripped = line.strip()
+                        if stripped and re.fullmatch(r"[-+]?\d+(?:\.\d+)?", stripped):
+                            raw = float(stripped)
+                            value = (raw / 10.0) - 273.15
+                            if math.isfinite(value) and -50.0 <= value <= 150.0:
+                                return value
             except Exception as _e:
                 log_error(_e, context="ui", severity="debug")
 
