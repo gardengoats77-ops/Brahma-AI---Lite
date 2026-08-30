@@ -18,6 +18,7 @@ config/discord_bot.json
 config/workspace_store.sqlite3*
 config/smart_home.*
 config/ppt_template_cache/
+config/research_cache/
 config/.bootstrap_done
 config/certs/
 memory/long_term.json
